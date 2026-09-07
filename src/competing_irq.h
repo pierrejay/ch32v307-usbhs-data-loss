@@ -11,6 +11,14 @@
 #define COMPETING_IRQ_PREEMPT   0
 #define COMPETING_IRQ_SUB       0
 
+#if IRQ_WORK_US < 0
+#error IRQ_WORK_US must be non-negative
+#endif
+
+#if IRQ_WORK_US >= COMPETING_IRQ_PERIOD_US
+#error IRQ_WORK_US must be shorter than the competing interrupt period
+#endif
+
 void CompetingIRQ_Init(void);
 
 #endif

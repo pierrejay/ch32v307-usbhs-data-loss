@@ -5,3 +5,5 @@ __pycache__/
 *.pyc
 ch372-fail.json
 ch372-fail-received.bin
+ch372-fail-*.json
+ch372-fail-*-received.bin

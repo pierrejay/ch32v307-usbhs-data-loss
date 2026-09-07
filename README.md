@@ -5,18 +5,20 @@ host writes bytes to `0x01`; the firmware queues the received packets in its rin
 buffer and sends them back on `0x81`.
 
 The observable contract is simple: every completed host write must come back in
-full, byte-for-byte and in order. On CH32V307VCT6 and CH32V307WCU6 devices, that
-contract breaks when an unrelated interrupt at the same priority occasionally
-holds the CPU for 5 us:
+full, byte-for-byte and in order within the configured two-second deadline. On
+CH32V307VCT6 and CH32V307WCU6 devices, that contract breaks when an unrelated
+interrupt at the same priority delays USBHS processing:
 
 - 0 us of work: 1000/1000 bursts exact, 3,078,000 bytes returned;
-- 5 us of work: the first incorrect burst returned 2,054 of 3,078 bytes. Two
-  consecutive 512-byte blocks were missing; their position within the burst
-  varies with the timer phase. Every returned byte remained exact and in order.
+- 1 to 5 us of work: data loss appears from 1 us and becomes nearly systematic
+  in 1,000-burst runs from 4 us. Every captured failure returned only the first
+  2,560 of 3,078 bytes by the deadline. The absent 518-byte suffix corresponds
+  to the expected final 512-byte packet and 6-byte tail. Every returned byte
+  remained exact and in order.
 
 The base WCH USBHS driver, endpoint handling, descriptors and loopback body are
-copied unchanged. The test adds one periodic timer interrupt, two optional
-patches and one host-side comparator.
+copied unchanged. The test adds one periodic timer interrupt, one dedicated
+read-only timebase, two optional patches and one host-side comparator.
 
 ## Firmware
 
@@ -28,9 +30,9 @@ sdk/EVT/EXAM/USB/USBHS/DEVICE/CH372Device/User
 ```
 
 Seven files in `src/` are byte-identical to that directory, including the USBHS
-interrupt handler, its endpoint logic and its descriptors. `make check-vendor`
-verifies them with `cmp` before every build. The loopback body in `main.c` is also
-unchanged; only the initialization around it differs.
+interrupt handler, its endpoint logic and its descriptors. `make check` verifies
+them with `cmp` and is a prerequisite of `make build`. The loopback body in
+`main.c` is also unchanged; only the initialization around it differs.
 
 The exact vendor EP1 OUT handler is visible at
 [`ch32v30x_usbhs_device.c`, lines 447-466](https://github.com/openwch/ch32v307/blob/69a2eec903b4f919fcb73d1ab6c10c690780e4d1/EVT/EXAM/USB/USBHS/DEVICE/CH372Device/User/ch32v30x_usbhs_device.c#L447-L466).
@@ -43,13 +45,21 @@ The only application changes are visible in two places:
 - `main.c` removes the vendor's startup UART diagnostics and starts the test
   interrupt after USB initialization;
 - `competing_irq.c` configures TIM2 every 997 us, at the same priority as USBHS.
-  TIM2 acknowledges its own flag and occupies the CPU for the compiled-in
-  duration. It never reads or writes a USB register.
+  Before TIM2 is started, the reproducer explicitly configures both
+  `USBHS_IRQn` and `TIM2_IRQn` at priority 0/0. This preserves the reset-default
+  USBHS priority while making the intended equal-priority condition explicit;
+  the USBHS handler and endpoint code remain unchanged. TIM3 is a dedicated
+  free-running 24 MHz timebase, configured once without an interrupt. The TIM2
+  handler acknowledges its own flag and waits for the compiled-in elapsed time
+  using only read accesses to TIM3. The modular elapsed-time calculation is
+  independent of TIM3's starting value and wraparound (within the accepted
+  delay range). Neither timer reads or writes a USB register.
 
-997 us has no fixed phase relationship with the 125 us USB microframe, so USB
-events encounter the competing ISR intermittently. The 0 us image still runs
-TIM2 and pays the same interrupt-entry overhead; only the time spent in its
-handler changes. The USB handler contains no injected delay.
+997 us is not a multiple of the 125 us USB microframe. The relative phase shifts
+by 3 us on each timer period, so USB events encounter the competing ISR at
+different points. The 0 us image still runs TIM2 and pays the same
+interrupt-entry overhead; only the time spent in its handler changes. The USB
+handler contains no injected delay.
 
 The vendor configuration runs the core at 96 MHz. Five microseconds therefore
 represents approximately 480 CPU cycles, or 4% of one high-speed microframe.
@@ -78,9 +88,11 @@ received = device.read(0x81, 3078)
 ```
 
 It compares the echo immediately and stops at the first discrepancy. A short or
-modified echo is `FAIL integrity`; a USB timeout is `FAIL progression`; a setup
-failure is `INVALID`. An integrity failure also writes `ch372-fail.json` and the
-received bytes to `ch372-fail-received.bin`.
+modified echo, including a partial read returned at the timeout deadline, is
+`FAIL integrity`. A USB operation that raises an error, or an incomplete OUT
+write, is `FAIL abort`; a setup failure is `INVALID`. An integrity failure also
+writes timestamped `ch372-fail-<UTC>.json` and `ch372-fail-<UTC>-received.bin` 
+files (`--no-artifacts` cuts it).
 
 ## Setup
 
@@ -150,14 +162,23 @@ sudo python3 runner.py --count 1000       # Linux
 
 Representative failure:
 
+The synchronous OUT call has already returned all 3,078 bytes before the IN read
+begins, indicating at the USB API level that the device accepted the complete
+burst. A probe capture confirmed that the missing packets reached the RX DMA
+path but were not admitted to the ring buffer that feeds the echo.
+
 ```sh
 FAIL integrity
-  burst 146: wrote 3078 bytes, received 2054
+  burst 310: wrote 3078 bytes, received 2560
+  518-byte range [2560:3078] is missing from the echo
+  all other bytes are exact and in order
+  310 earlier bursts were byte-exact
 ```
 (The precise burst depends on the phase between TIM2 and USB traffic.)
 
-A new runner process does not reset the device or its free-running timer.
-Reset or reflash the device before starting an independent campaign.
+For this signature, libusb reaches the configured two-second read deadline after
+receiving 2,560 bytes. PyUSB returns that partial buffer, which the runner compares
+directly with the expected 3,078-byte echo.
 
 The two images differ only in the duration of the TIM2 handler. The USB handler,
 endpoint policy, loopback code and host stimulus are identical.
@@ -212,6 +233,9 @@ PASS
   1000/1000 bursts echoed byte-for-byte
   3078000 bytes written; 3078000 bytes received
 ```
+
+Other interrupt durations can be generated with `make build WORK_US=N`. Run
+`make help` for all build options.
 
 ## License
 

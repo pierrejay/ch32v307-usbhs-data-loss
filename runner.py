@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import os
 import platform
 import sys
 import time
@@ -12,6 +13,7 @@ EP_OUT, EP_IN = 0x01, 0x81
 RECORDS_PER_BURST = 171
 RECORD_SIZE = 18
 BURST_SIZE = RECORDS_PER_BURST * RECORD_SIZE  # 3078 = 6 * 512 + 6
+MAX_BURSTS = 999999 // RECORDS_PER_BURST
 
 
 def make_record(index):
@@ -31,16 +33,23 @@ def first_difference(expected, received):
     return min(len(expected), len(received))
 
 
-def contiguous_slice(expected, received):
-    """Return the source offset when received is one contiguous slice of expected."""
-    if not received or len(received) >= len(expected):
-        return None
-    offset = expected.find(received)
-    return offset if offset >= 0 else None
+def contiguous_deletion_starts(expected, received):
+    """Return every start offset that explains received by one deletion."""
+    missing = len(expected) - len(received)
+    if missing <= 0:
+        return []
+    return [
+        start
+        for start in range(len(received) + 1)
+        if received[:start] == expected[:start]
+        and received[start:] == expected[start + missing :]
+    ]
 
 
-def preview(data):
-    return data[:54].decode("ascii", errors="replace").replace("\n", "\\n")
+def preview(data, start):
+    return data[start : start + 54].decode("ascii", errors="replace").replace(
+        "\n", "\\n"
+    )
 
 
 def open_device():
@@ -65,9 +74,7 @@ def open_device():
     device = devices[0]
     try:
         configuration = device.get_active_configuration()
-    except usb.core.USBError as error:
-        if "Configuration not set" not in str(error):
-            raise
+    except usb.core.USBError:
         device.set_configuration(1)
         configuration = device.get_active_configuration()
     if configuration.bConfigurationValue != 1:
@@ -79,18 +86,26 @@ def open_device():
     return device
 
 
-def save_failure(report, received):
-    json_path = "ch372-fail.json"
-    raw_path = "ch372-fail-received.bin"
-    with open(json_path, "w", encoding="utf-8") as handle:
+def save_failure(report, received, stamp):
+    sequence = 0
+    while True:
+        suffix = "" if sequence == 0 else "-%d" % sequence
+        stem = "ch372-fail-%s%s" % (stamp, suffix)
+        json_path = stem + ".json"
+        raw_path = stem + "-received.bin"
+        if not os.path.exists(json_path) and not os.path.exists(raw_path):
+            break
+        sequence += 1
+
+    with open(json_path, "x", encoding="utf-8") as handle:
         json.dump(report, handle, indent=2)
         handle.write("\n")
-    with open(raw_path, "wb") as handle:
+    with open(raw_path, "xb") as handle:
         handle.write(received)
     print("  kept %s and %s" % (json_path, raw_path))
 
 
-def run(device, count, timeout_ms):
+def run(device, count, timeout_ms, keep_artifacts=True):
     sent_bytes = 0
     received_bytes = 0
 
@@ -106,13 +121,13 @@ def run(device, count, timeout_ms):
         try:
             written = device.write(EP_OUT, expected, timeout_ms)
         except Exception as error:  # PyUSB backend errors differ across hosts.
-            print("FAIL progression")
+            print("FAIL abort")
             print("  OUT write stalled at burst %d: %s" % (number, error))
             print("  %d bytes offered; %d bytes received" % (sent_bytes, received_bytes))
             return 1
 
         if written != len(expected):
-            print("FAIL progression")
+            print("FAIL abort")
             print(
                 "  OUT write accepted %d of %d bytes at burst %d"
                 % (written, len(expected), number)
@@ -123,7 +138,7 @@ def run(device, count, timeout_ms):
         try:
             received = bytes(device.read(EP_IN, BURST_SIZE, timeout_ms))
         except Exception as error:
-            print("FAIL progression")
+            print("FAIL abort")
             print("  IN read stalled at burst %d: %s" % (number, error))
             print("  %d bytes written; %d bytes received" % (sent_bytes, received_bytes))
             return 1
@@ -133,16 +148,23 @@ def run(device, count, timeout_ms):
             continue
 
         difference = first_difference(expected, received)
-        source_offset = contiguous_slice(expected, received)
+        deletion_starts = contiguous_deletion_starts(expected, received)
+        missing = len(expected) - len(received)
+        missing_range = None
+        if len(deletion_starts) == 1:
+            missing_range = [deletion_starts[0], deletion_starts[0] + missing]
+        now = time.gmtime()
+        stamp = time.strftime("%Y%m%d-%H%M%SZ", now)
         report = {
-            "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", now),
             "verdict": "FAIL integrity",
             "burst": number,
             "exact_bursts_before_failure": number,
             "expected_bytes": len(expected),
             "received_bytes": len(received),
             "first_difference": difference,
-            "received_is_sent_slice_at": source_offset,
+            "missing_range": missing_range,
+            "timeout_ms": timeout_ms,
         }
 
         print("FAIL integrity")
@@ -150,17 +172,26 @@ def run(device, count, timeout_ms):
             "  burst %d: wrote %d bytes, received %d"
             % (number, len(expected), len(received))
         )
-        print("  sent |%s|" % preview(expected))
-        print("  got  |%s|" % preview(received))
-        if source_offset is not None:
-            end = source_offset + len(received)
-            print("  received data equals sent bytes [%d:%d]" % (source_offset, end))
-            if end == len(expected) and source_offset:
-                print("  %d-byte prefix missing from the echo" % source_offset)
+        if missing_range is not None:
+            print(
+                "  %d-byte range [%d:%d] is missing from the echo"
+                % (missing, missing_range[0], missing_range[1])
+            )
+            print("  all other bytes are exact and in order")
+        elif deletion_starts:
+            print(
+                "  echo equals sent data with one contiguous %d-byte range removed"
+                % missing
+            )
+            print("  missing range position is ambiguous")
         else:
+            context = max(0, difference - RECORD_SIZE)
+            print("  sent[%d:] |%s|" % (context, preview(expected, context)))
+            print("  got [%d:] |%s|" % (context, preview(received, context)))
             print("  first difference at byte %d" % difference)
         print("  %d earlier bursts were byte-exact" % number)
-        save_failure(report, received)
+        if keep_artifacts:
+            save_failure(report, received, stamp)
         return 1
 
     print("PASS")
@@ -171,12 +202,24 @@ def run(device, count, timeout_ms):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--count", type=int, default=1000, help="number of bursts")
+    parser.add_argument(
+        "--count",
+        type=int,
+        default=1000,
+        help="number of bursts (1-%d)" % MAX_BURSTS,
+    )
     parser.add_argument("--timeout", type=int, default=2000, help="ms per USB transfer")
+    parser.add_argument(
+        "--no-artifacts",
+        action="store_true",
+        help="do not write failure JSON or received-byte files",
+    )
     args = parser.parse_args()
 
     if args.count < 1:
         parser.error("--count must be positive")
+    if args.count > MAX_BURSTS:
+        parser.error("--count must not exceed %d" % MAX_BURSTS)
     if args.timeout < 1:
         parser.error("--timeout must be positive")
 
@@ -185,7 +228,7 @@ def main():
     except Exception as error:
         print("INVALID: %s: %s" % (type(error).__name__, error))
         return 2
-    return run(device, args.count, args.timeout)
+    return run(device, args.count, args.timeout, not args.no_artifacts)
 
 
 if __name__ == "__main__":
