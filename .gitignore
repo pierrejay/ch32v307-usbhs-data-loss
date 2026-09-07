@@ -1,0 +1,7 @@
+.toolchain/
+.venv/
+build-*/
+__pycache__/
+*.pyc
+ch372-fail.json
+ch372-fail-received.bin
