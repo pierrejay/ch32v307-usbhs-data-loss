@@ -237,6 +237,49 @@ PASS
 Other interrupt durations can be generated with `make build WORK_US=N`. Run
 `make help` for all build options.
 
+## Forensics
+
+The failing signature was checked independently in device RAM and at the USB
+wire.
+
+The target was halted without reset immediately after two failures. The
+software ring had advanced by five slots rather than seven, was empty, and EP1
+IN was idle. The next unpublished RX DMA slot contained bytes 8 through 511 of
+P5, while its first six bytes matched P6. RX DMA still selected that slot and TX
+DMA selected the preceding, last-published slot. P5 and P6 had therefore
+reached the same RX DMA slot, where the short packet overwrote the start of the
+full packet, but neither was admitted to the software ring.
+
+An [USB sniffer](https://github.com/ataradov/usb-sniffer) was then placed between a
+macOS host and a CH32V307VCT6. Its 0 us control capture reconstructs all
+3,078,000 bytes from exactly 7,000 acknowledged OUT packets and 7,000
+acknowledged IN packets, byte-for-byte in both directions.
+
+The 5 us capture reproduces the 518-byte loss at burst 93. On the wire:
+
+- the final 512-byte packet, P5/DATA0, is acknowledged;
+- the 6-byte tail, P6/DATA1, first receives NAK;
+- after PING receives NAK and then ACK, the host repeats the identical
+  P6/DATA1, which the device acknowledges;
+- the device returns only P0 through P4 on IN, then answers subsequent IN
+  tokens with NAK.
+
+All seven logical OUT packets are therefore eventually acknowledged, with the
+expected payload and valid CRC, while P5 and P6 never reach the loopback
+output. The wire capture rules out malformed host payload and a wire-level CRC
+error. The RAM observations above additionally rule out the missing suffix
+being admitted to the software ring but blocked on EP1 IN.
+
+Together, these observations localize the loss between USBHS reception and the
+vendor handler's admission of packets to its ring. They do not reveal the exact
+values of `INT_ST`, `TOG_OK` or `RX_LEN` seen by the delayed handler, and do
+not distinguish an example-code defect from a controller limitation. The
+capture is also not a lost-ACK experiment: the observed retry follows an
+explicit NAK.
+
+The validated PCAPNG files, runner result and capture helper are preserved in
+[`usb-capture/`](usb-capture/).
+
 ## License
 
 Original reproducer code and documentation are available under the MIT License.

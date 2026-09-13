@@ -1,0 +1,14 @@
+{
+  "utc": "2026-09-13T20:50:11Z",
+  "verdict": "FAIL integrity",
+  "burst": 93,
+  "exact_bursts_before_failure": 93,
+  "expected_bytes": 3078,
+  "received_bytes": 2560,
+  "first_difference": 2560,
+  "missing_range": [
+    2560,
+    3078
+  ],
+  "timeout_ms": 2000
+}
