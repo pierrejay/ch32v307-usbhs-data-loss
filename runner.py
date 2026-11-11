@@ -200,6 +200,21 @@ def run(device, count, timeout_ms, keep_artifacts=True):
     return 0
 
 
+def duplicate_check(device, timeout_ms):
+    """For the toggle policies: a burst whose first packet starts with DUPTEST! makes the
+    device expect the other toggle, so that the second packet looks like a retransmission,
+    to be acknowledged and dropped. The echo must be the burst without bytes 512 to 1024."""
+    sent = b"DUPTEST!" + make_burst(0)[8:]
+    device.write(EP_OUT, sent, timeout_ms)
+    received = bytes(device.read(EP_IN, BURST_SIZE, timeout_ms))
+    if received != sent[:512] + sent[1024:]:
+        print("FAIL duplicate")
+        print("  received %d bytes, expected the burst without [512:1024]" % len(received))
+        return 1
+    print("PASS duplicate: second packet acknowledged and dropped, the others echoed")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -213,6 +228,11 @@ def main():
         "--no-artifacts",
         action="store_true",
         help="do not write failure JSON or received-byte files",
+    )
+    parser.add_argument(
+        "--duplicate",
+        action="store_true",
+        help="toggle policies only: first check that a retransmitted packet is dropped",
     )
     args = parser.parse_args()
 
@@ -228,6 +248,8 @@ def main():
     except Exception as error:
         print("INVALID: %s: %s" % (type(error).__name__, error))
         return 2
+    if args.duplicate and duplicate_check(device, args.timeout):
+        return 1
     return run(device, args.count, args.timeout, not args.no_artifacts)
 
 

@@ -18,7 +18,7 @@ interrupt at the same priority delays USBHS processing:
 
 The base WCH USBHS driver, endpoint handling, descriptors and loopback body are
 copied unchanged. The test adds one periodic timer interrupt, one dedicated
-read-only timebase, two optional patches and one host-side comparator.
+read-only timebase, four optional patches and one host-side comparator.
 
 ## Firmware
 
@@ -271,14 +271,84 @@ error. The RAM observations above additionally rule out the missing suffix
 being admitted to the software ring but blocked on EP1 IN.
 
 Together, these observations localize the loss between USBHS reception and the
-vendor handler's admission of packets to its ring. They do not reveal the exact
-values of `INT_ST`, `TOG_OK` or `RX_LEN` seen by the delayed handler, and do
-not distinguish an example-code defect from a controller limitation. The
-capture is also not a lost-ACK experiment: the observed retry follows an
-explicit NAK.
+vendor handler's admission of packets to its ring. They do not show what the
+delayed handler read; section 3 explains it. The capture is also not a lost-ACK
+experiment: the observed retry follows an explicit NAK.
 
 The validated PCAPNG files, runner result and capture helper are preserved in
 [`usb-capture/`](usb-capture/).
+
+## 3. A candidate that keeps duplicate detection
+
+Two more policies come from a closer look at what a late handler reads (below):
+
+| Policy | Change |
+|---|---|
+| `toggle-rx` | EP1 OUT: enable the RX auto toggle. On every transfer interrupt, whatever `INT_ST` shows, wait for `MIS_ST.SIE_FREE`, then take a packet only if the RX toggle has flipped |
+| `toggle` | `toggle-rx`, and `USBHS_Endp_DataUp` arms EP1 IN with one store instead of two |
+
+The SIE flips the RX toggle only for a packet it accepts. A retransmitted packet
+arrives with the wrong toggle: it is acknowledged and leaves the toggle as it is,
+so it is dropped. That is what the `TOG_OK` test was for.
+
+`runner.py --duplicate` checks that path before the bursts. The device takes a
+packet starting with `DUPTEST!` as a request to expect the other toggle, so the
+next packet looks like a retransmission. The echo must then lack exactly bytes 512
+to 1024, and the following bursts must be exact again.
+
+```sh
+make build POLICY=toggle WORK_US=20
+minichlink -w build-toggle-20us/firmware.bin flash -b
+sudo python3 runner.py --duplicate --count 1000       # Linux
+```
+
+Results on a CH32V307WCU6 with a Linux host ("–": not run):
+
+| Policy | 0 us | 1 us | 5 us | 20 us |
+|---|---|---|---|---|
+| `vanilla` | – | – | FAIL at burst 480: 2,560 of 3,078 bytes | – |
+| `toggle-rx` | – | – | – | FAIL on IN at burst 4011 |
+| `toggle` | duplicate dropped; 1000/1000 | duplicate dropped; 1000/1000 | duplicate dropped; 1000/1000, then 5000/5000 | duplicate dropped; 100,000/100,000 |
+
+### What a late handler reads
+
+An independent analysis made with a Cynthion analyzer for the Rust HAL
+([ch32-rs/ch32-hal#229](https://github.com/ch32-rs/ch32-hal/pull/229)) reports
+behaviour that matches the reception loss:
+
+- `INT_ST` describes the latest token on the bus, including one the SIE answered
+  with NAK, not the transaction that raised the transfer flag;
+- the flag is a single bit, so a late entry stands for more than one transaction;
+- the flag rises slightly before `MIS_ST.SIE_FREE`, while `TOG_OK` is not final.
+
+A handler delayed by a few microseconds can therefore read the `TOG_OK` of a later
+token, and leave out a packet the host has seen acknowledged.
+
+`INT_BUSY` works. On the wire, while the flag is pending, the device answers NAK
+to IN tokens and to OUT data; after a PING, the host sends the same OUT data again
+and it is accepted.
+
+### A second loss at 20 us, on IN
+
+With reception fixed and 20 us of competing work, IN loses packets too.
+`USBHS_Endp_DataUp` arms the endpoint with
+
+```c
+USBHSD_UEP_TXCTRL( endp ) = (USBHSD_UEP_TXCTRL( endp ) &= ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_ACK;
+```
+
+which compiles to one read and two stores of the same value
+(`lbu; andi; sb; sb`). `USBHS_UEP_T_RES_ACK` is 0, so the first store already arms
+the endpoint. If an interrupt falls between the two stores, a packet can go out,
+and its completion handler can flip the toggle and release the endpoint, before
+the second store writes back the old toggle and ACK. This takes a whole 512-byte
+packet between two instructions, which is why it shows only at 20 us.
+
+[`usb-capture/toggle-rx-20us-burst4011.pcapng`](usb-capture/toggle-rx-20us-burst4011.pcapng)
+shows one case. P4 goes out as DATA0 and is acknowledged. After three NAKs, the
+same P4 goes out again as DATA0 and the host drops it as a retransmission. P5 is
+never sent, and the IN side resumes with P6. `toggle` writes the register once,
+so the endpoint stays NAKed until that store.
 
 ## License
 

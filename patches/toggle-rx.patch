@@ -1,0 +1,119 @@
+--- a/ch32v30x_usbhs_device.c
++++ b/ch32v30x_usbhs_device.c
+@@ -58,6 +58,10 @@
+ RING_BUFF_COMM  RingBuffer_Comm;
+ __attribute__ ((aligned(4))) uint8_t Data_Buffer[DEF_RING_BUFFER_SIZE];
+ 
++/* Toggle policy: EP1 OUT packets are taken when the SIE has flipped the endpoint's
++ * auto-toggled RX toggle, read once the SIE is free (EP1_Toggle_Check). */
++static uint8_t EP1_Rx_Tog;
++
+ /******************************************************************************/
+ /* Interrupt Service Routine Declaration*/
+ void USBHS_IRQHandler(void) __attribute__((interrupt("WCH-Interrupt-fast")));
+@@ -165,7 +169,8 @@
+     USBHSD->UEP0_TX_CTRL = USBHS_UEP_T_RES_NAK;
+     USBHSD->UEP0_RX_CTRL = USBHS_UEP_R_RES_ACK;
+ 
+-    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_ACK;
++    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_ACK | USBHS_UEP_R_TOG_AUTO;
++    EP1_Rx_Tog = USBHS_UEP_R_TOG_DATA0;
+     USBHSD->UEP3_RX_CTRL = USBHS_UEP_R_RES_ACK;
+     USBHSD->UEP5_RX_CTRL = USBHS_UEP_R_RES_ACK;
+ 
+@@ -331,6 +336,51 @@
+  *
+  * @return  none
+  */
++static void EP1_Toggle_Check( void )
++{
++    uint32_t n = 0;
++    uint8_t  tog;
++    uint8_t  *slot;
++
++    /* A late entry can show a later token in INT_ST, and TOG_OK is not final when the
++     * flag rises. With auto toggle, the SIE flips the toggle on each packet it accepts
++     * (OUT) or the host acknowledges (IN); a retransmitted OUT packet (wrong toggle) is
++     * acknowledged and leaves it as it is. So read it once the SIE is free, on every
++     * transfer entry, whatever INT_ST shows. */
++    while( ( ( USBHSD->MIS_ST & USBHS_UMS_SIE_FREE ) == 0 ) && ( n < 2000 ) )
++    {
++        n++;
++    }
++    tog = USBHSD->UEP1_RX_CTRL & USBHS_UEP_R_TOG_MASK;
++    if( tog == EP1_Rx_Tog )
++    {
++        return;
++    }
++    EP1_Rx_Tog = tog;
++    slot = &Data_Buffer[ ( RingBuffer_Comm.LoadPtr ) * DEF_USBD_HS_PACK_SIZE ];
++    RingBuffer_Comm.PackLen[RingBuffer_Comm.LoadPtr] = USBHSD->RX_LEN;
++    /* Duplicate test (runner.py --duplicate): after a packet starting with DUPTEST!,
++     * expect the other toggle, so that the host's next packet looks like a
++     * retransmission, to be acknowledged and dropped. */
++    if( memcmp( slot, "DUPTEST!", 8 ) == 0 )
++    {
++        USBHSD->UEP1_RX_CTRL ^= USBHS_UEP_R_TOG_DATA1;
++        EP1_Rx_Tog ^= USBHS_UEP_R_TOG_DATA1;
++    }
++    RingBuffer_Comm.LoadPtr ++;
++    if(RingBuffer_Comm.LoadPtr == DEF_Ring_Buffer_Max_Blks)
++    {
++        RingBuffer_Comm.LoadPtr = 0;
++    }
++    USBHSD->UEP1_RX_DMA = (uint32_t)(&Data_Buffer[(RingBuffer_Comm.LoadPtr) * DEF_USBD_HS_PACK_SIZE]);
++    RingBuffer_Comm.RemainPack ++;
++    if(RingBuffer_Comm.RemainPack >= DEF_Ring_Buffer_Max_Blks-DEF_RING_BUFFER_REMINE)
++    {
++        USBHSD->UEP1_RX_CTRL = ((USBHSD->UEP1_RX_CTRL) & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_NAK;
++        RingBuffer_Comm.StopFlag = 1;
++    }
++}
++
+ void USBHS_IRQHandler( void )
+ {
+     uint8_t  intflag, intst, errflag;
+@@ -341,6 +391,7 @@
+ 
+     if( intflag & USBHS_UIF_TRANSFER )
+     {
++        EP1_Toggle_Check( );
+         switch ( intst & USBHS_UIS_TOKEN_MASK )
+         {
+             /* data-in stage processing */
+@@ -445,24 +496,7 @@
+ 
+                     /* end-point 1 data out interrupt */
+                     case USBHS_UIS_TOKEN_OUT | DEF_UEP1:
+-                        if ( intst & USBHS_UIS_TOG_OK )
+-                        {
+-                            /* Write In Buffer */
+-                            USBHSD->UEP1_RX_CTRL ^= USBHS_UEP_R_TOG_DATA1;
+-                            RingBuffer_Comm.PackLen[RingBuffer_Comm.LoadPtr] = USBHSD->RX_LEN;
+-                            RingBuffer_Comm.LoadPtr ++;
+-                            if(RingBuffer_Comm.LoadPtr == DEF_Ring_Buffer_Max_Blks)
+-                            {
+-                                RingBuffer_Comm.LoadPtr = 0;
+-                            }
+-                            USBHSD->UEP1_RX_DMA = (uint32_t)(&Data_Buffer[(RingBuffer_Comm.LoadPtr) * DEF_USBD_HS_PACK_SIZE]);
+-                            RingBuffer_Comm.RemainPack ++;
+-                            if(RingBuffer_Comm.RemainPack >= DEF_Ring_Buffer_Max_Blks-DEF_RING_BUFFER_REMINE)
+-                            {
+-                                USBHSD->UEP1_RX_CTRL = ((USBHSD->UEP1_RX_CTRL) & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_NAK;
+-                                RingBuffer_Comm.StopFlag = 1;
+-                            }
+-                        }
++                        /* Taken by EP1_Toggle_Check, whatever INT_ST shows. */
+                         break;
+ 
+                     /* end-point 3 data out interrupt */
+@@ -705,7 +739,8 @@
+                             {
+                                 case (DEF_UEP1 | DEF_UEP_OUT):
+                                     /* Set End-point 1 OUT ACK */
+-                                    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_ACK;
++                                    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_ACK | USBHS_UEP_R_TOG_AUTO;
++                                    EP1_Rx_Tog = USBHS_UEP_R_TOG_DATA0;
+                                     break;
+ 
+                                 case (DEF_UEP1 | DEF_UEP_IN):

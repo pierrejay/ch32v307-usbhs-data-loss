@@ -14,7 +14,7 @@ SIZE := $(CROSS)size
 # Microseconds spent in the competing TIM2 ISR. This is the experiment's only knob.
 WORK_US ?= 0
 POLICY ?= vanilla
-POLICIES := vanilla no-tog-ok nyet
+POLICIES := vanilla no-tog-ok nyet toggle-rx toggle
 
 ifeq ($(filter $(POLICY),$(POLICIES)),)
 $(error POLICY must be one of: $(POLICIES))
@@ -69,7 +69,7 @@ VENDOR_IDENTICAL := ch32v30x_conf.h ch32v30x_it.c ch32v30x_it.h \
 help:
 	@printf '%s\n' \
 		'Usage:' \
-		'  make                         Build the four documented firmware images' \
+		'  make                         Build the documented firmware images' \
 		'  make build [POLICY=name] [WORK_US=N]' \
 		'                               Build one firmware image' \
 		'  make toolchain               Fetch the pinned WCH GCC 12.2.0 toolchain' \
@@ -80,6 +80,8 @@ help:
 		'  POLICY=vanilla               Unmodified WCH EP1 OUT handling (default)' \
 		'  POLICY=no-tog-ok              Accept EP1 OUT without checking TOG_OK' \
 		'  POLICY=nyet                   Keep TOG_OK and arm EP1 OUT with NYET' \
+		'  POLICY=toggle-rx              Take EP1 OUT on its auto-toggled RX toggle flip' \
+		'  POLICY=toggle                 toggle-rx, and arm EP1 IN with one store' \
 		'  WORK_US=N                     Work in the competing TIM2 ISR, in us (default: 0)' \
 		'' \
 		'Output:' \
@@ -95,6 +97,9 @@ all:
 	$(MAKE) POLICY=vanilla WORK_US=5 build
 	$(MAKE) POLICY=no-tog-ok WORK_US=5 build
 	$(MAKE) POLICY=nyet WORK_US=5 build
+	$(MAKE) POLICY=toggle WORK_US=5 build
+	$(MAKE) POLICY=toggle-rx WORK_US=20 build
+	$(MAKE) POLICY=toggle WORK_US=20 build
 
 check: check-sdk check-toolchain check-vendor check-patch
 
