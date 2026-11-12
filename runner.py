@@ -232,7 +232,7 @@ def main():
     parser.add_argument(
         "--duplicate",
         action="store_true",
-        help="toggle policies only: first check that a retransmitted packet is dropped",
+        help="toggle and nyet-dataup images only: first check that a retransmitted packet is dropped",
     )
     args = parser.parse_args()
 

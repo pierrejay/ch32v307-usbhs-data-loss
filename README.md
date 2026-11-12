@@ -1,408 +1,212 @@
-# CH32V307 USBHS: data loss under interrupt contention
+# CH32V307 USBHS: data loss when the USB interrupt is delayed
 
-WCH's `CH372Device` USBHS example implements a bulk loopback on endpoint 1. A
-host writes bytes to `0x01`; the firmware queues the received packets in its ring
-buffer and sends them back on `0x81`.
+WCH's `CH372Device` USBHS example sends back on `0x81` everything written to bulk endpoint `0x01`.
+When another interrupt delays the USB interrupt by a few microseconds, the echo comes back short:
+packets that the host saw acknowledged never reach the application.
 
-The observable contract is simple: every completed host write must come back in
-full, byte-for-byte and in order within the configured two-second deadline. On
-CH32V307VCT6 and CH32V307WCU6 devices, that contract breaks when an unrelated
-interrupt at the same priority delays USBHS processing:
+This repository reproduces the loss with WCH's own code, explains it and fixes it. There are two
+causes, each fixed by a small change:
 
-- 0 us of work: 1000/1000 bursts exact, 3,078,000 bytes returned;
-- 1 to 5 us of work: data loss appears from 1 us and becomes nearly systematic
-  in 1,000-burst runs from 4 us. Every captured failure returned only the first
-  2,560 of 3,078 bytes by the deadline. The absent 518-byte suffix corresponds
-  to the expected final 512-byte packet and 6-byte tail. Every returned byte
-  remained exact and in order.
+| Direction | What goes wrong | Fix |
+|---|---|---|
+| Reception, from 1 us of delay | A late handler reads the `TOG_OK` bit of a later packet and drops a good one; two packets are lost | Arm EP1 OUT with NYET instead of ACK |
+| Transmission, at 20 us | `USBHS_Endp_DataUp` arms IN with two stores; the second can undo a packet sent in between; one packet is lost | Arm IN with one store |
 
-The base WCH USBHS driver, endpoint handling, descriptors and loopback body are
-copied unchanged. The test adds one periodic timer interrupt, one dedicated
-read-only timebase, five optional patches and one host-side comparator.
+With both changes (`nyet-dataup`), 100,000 bursts at 20 us come back exact.
 
-## Firmware
+## The test
 
-The `sdk/` submodule is pinned to WCH commit
-`69a2eec903b4f919fcb73d1ab6c10c690780e4d1`. The reference example is:
+The firmware is WCH's example: the USB handler, endpoint code, descriptors and loopback are
+byte-identical to the SDK. One thing is added: TIM2 interrupts every 997 us, at the USB interrupt's
+priority, and keeps the CPU for `WORK_US` microseconds. It does not touch USB.
 
-```
-sdk/EVT/EXAM/USB/USBHS/DEVICE/CH372Device/User
-```
+The host (`runner.py`) writes a burst of 3,078 bytes to `0x01` (six 512-byte packets and a 6-byte
+tail), reads 3,078 bytes back from `0x81`, compares, and stops at the first difference.
 
-Seven files in `src/` are byte-identical to that directory, including the USBHS
-interrupt handler, its endpoint logic and its descriptors. `make check` verifies
-them with `cmp` and is a prerequisite of `make build`. The loopback body in
-`main.c` is also unchanged; only the initialization around it differs.
+## Run it
 
-The exact vendor EP1 OUT handler is visible at
-[`ch32v30x_usbhs_device.c`, lines 447-466](https://github.com/openwch/ch32v307/blob/69a2eec903b4f919fcb73d1ab6c10c690780e4d1/EVT/EXAM/USB/USBHS/DEVICE/CH372Device/User/ch32v30x_usbhs_device.c#L447-L466).
-The unmodified main loop also briefly disables `USBHS_IRQn` while updating the
-ring-buffer consumer state, so the endpoint implementation already has to
-tolerate non-zero interrupt service latency.
-
-The only application changes are visible in two places:
-
-- `main.c` removes the vendor's startup UART diagnostics and starts the test
-  interrupt after USB initialization;
-- `competing_irq.c` configures TIM2 every 997 us, at the same priority as USBHS.
-  Before TIM2 is started, the reproducer explicitly configures both
-  `USBHS_IRQn` and `TIM2_IRQn` at priority 0/0. This preserves the reset-default
-  USBHS priority while making the intended equal-priority condition explicit;
-  the USBHS handler and endpoint code remain unchanged. TIM3 is a dedicated
-  free-running 24 MHz timebase, configured once without an interrupt. The TIM2
-  handler acknowledges its own flag and waits for the compiled-in elapsed time
-  using only read accesses to TIM3. The modular elapsed-time calculation is
-  independent of TIM3's starting value and wraparound (within the accepted
-  delay range). Neither timer reads or writes a USB register.
-
-997 us is not a multiple of the 125 us USB microframe. The relative phase shifts
-by 3 us on each timer period, so USB events encounter the competing ISR at
-different points. The 0 us image still runs TIM2 and pays the same
-interrupt-entry overhead; only the time spent in its handler changes. The USB
-handler contains no injected delay.
-
-The vendor configuration runs the core at 96 MHz. Five microseconds therefore
-represents approximately 480 CPU cycles, or 4% of one high-speed microframe.
-
-The build links directly with WCH's generic CH32V307
-`EVT/EXAM/SRC/Ld/Link.ld`, using its default 288 KiB flash / 32 KiB RAM
-allocation. The image uses about 10 KiB of static RAM and also fits devices
-configured for the 192 KiB flash / 128 KiB RAM split.
-
-## Host test
-
-`runner.py` generates readable, indexed records:
-
-```
-000000|ABCDEFGHIJ
-000001|BCDEFGHIJK
-...
-```
-
-One burst contains 3,078 bytes: six 512-byte packets followed by six bytes. For
-each burst the runner performs exactly:
-
-```python
-device.write(0x01, expected)
-received = device.read(0x81, 3078)
-```
-
-It compares the echo immediately and stops at the first discrepancy. A short or
-modified echo, including a partial read returned at the timeout deadline, is
-`FAIL integrity`. A USB operation that raises an error, or an incomplete OUT
-write, is `FAIL abort`; a setup failure is `INVALID`. An integrity failure also
-writes timestamped `ch372-fail-<UTC>.json` and `ch372-fail-<UTC>-received.bin` 
-files (`--no-artifacts` cuts it).
-
-## Setup
-
-The build uses WCH GCC 12.2.0. `make toolchain` fetches a pinned native
-package from Community-PIO for
-[macOS](https://github.com/Community-PIO-CH32V/toolchain-riscv-mac) or
-[Linux x86-64](https://github.com/Community-PIO-CH32V/toolchain-riscv-linux).
-
-These packages were cross-checked against the GCC 12.2.0 toolchain shipped
-in the official [MRS2 Toolchain & Debugger 2.4.0](https://www.mounriver.com/download)
-distribution. The Linux build components used here are byte-for-byte
-identical; on macOS, both distributions produce byte-for-byte identical
-firmware.
-
-### Linux
+Linux (macOS: see [Setup](#setup)):
 
 ```sh
 sudo apt install git make patch python3 python3-usb libusb-1.0-0
 git submodule update --init
-make toolchain  # Fetch WCH GCC toolchain
-make            # Build all test binaries
+make toolchain      # WCH GCC 12.2.0
+make                # the images used below
 ```
 
-Run the runner as `sudo`, or install a udev rule that grants access to
-`1a86:5537`.
-
-### macOS
+WCH's code with 5 us of competing work fails:
 
 ```sh
-brew install libusb python
-git submodule update --init
-make toolchain  # Fetch WCH GCC toolchain
-make            # Build all test binaries
-python3 -m venv .venv
-.venv/bin/python -m pip install pyusb
-```
-
-Runner normally doesn't need root privileges for this custom USB device on macOS.
-
-## 1. Reproduce the failure
-
-`vanilla` is the default policy. It retains the WCH endpoint code byte-for-byte.
-
-Build, flash and run the 0 us control firmware:
-
-```sh
-# Flash DUT
-minichlink -w build-vanilla-0us/firmware.bin flash -b
-
-# Run test
-sudo python3 runner.py --count 1000       # Linux
-.venv/bin/python runner.py --count 1000   # macOS
-```
-
-Expected result: `PASS`, with 3,078,000 bytes returned exactly.
-
-Then repeat with 5 us of work in the competing interrupt:
-
-```sh
-# Flash DUT
 minichlink -w build-vanilla-5us/firmware.bin flash -b
-
-# Run test
-sudo python3 runner.py --count 1000       # Linux
-.venv/bin/python runner.py --count 1000   # macOS
+sudo python3 runner.py --count 1000
 ```
 
-Representative failure:
-
-The synchronous OUT call has already returned all 3,078 bytes before the IN read
-begins, indicating at the USB API level that the device accepted the complete
-burst. A probe capture confirmed that the missing packets reached the RX DMA
-path but were not admitted to the ring buffer that feeds the echo.
-
-```sh
+```
 FAIL integrity
   burst 310: wrote 3078 bytes, received 2560
   518-byte range [2560:3078] is missing from the echo
   all other bytes are exact and in order
   310 earlier bursts were byte-exact
 ```
-(The precise burst depends on the phase between TIM2 and USB traffic.)
 
-For this signature, libusb reaches the configured two-second read deadline after
-receiving 2,560 bytes. PyUSB returns that partial buffer, which the runner compares
-directly with the expected 3,078-byte echo.
-
-The two images differ only in the duration of the TIM2 handler. The USB handler,
-endpoint policy, loopback code and host stimulus are identical.
-
-## 2. Evaluate two candidate workarounds
-
-The repository carries two small patches for comparison under the same 5 us
-contention:
-
-| Policy | Change to EP1 OUT | Rationale |
-|---|---|---|
-| `no-tog-ok` | enqueue without checking `TOG_OK`; keep ACK | follow the acceptance pattern used by other WCH examples |
-| `nyet` | retain the `TOG_OK` check; arm with NYET | preserve duplicate detection while applying host backpressure |
-
-The patches are stored in `patches/` and applied only to a generated source copy
-inside the build directory. The vendor source in `src/` remains unchanged.
-
-The `no-tog-ok` policy matches the bulk OUT handling used by WCH's USBHS
-NCM, ECM and RNDIS examples at the pinned SDK commit. TinyUSB's
-[CH32 USBHS driver](https://github.com/hathach/tinyusb/blob/53f8c53c2cbd73a91a172f1ae35e9abc00eb5075/src/portable/wch/dcd_ch32_usbhs.c#L396-L416)
-also processes OUT transfers without checking `TOG_OK`.
-
-Caveats:
-
-- `no-tog-ok` may pass a retransmitted packet to the application if the host
-  did not receive the device's ACK, silently duplicating data. This condition
-  is outside the scope of the loopback test below.
-- `nyet` adds handshake/PING traffic under sustained OUT load and can reduce
-  throughput. This reproducer verifies integrity; it does not quantify that
-  overhead.
-
-Test `no-tog-ok`:
+The fix passes at 20 us, and a retransmitted packet is still dropped:
 
 ```sh
-minichlink -w build-no-tog-ok-5us/firmware.bin flash -b
-sudo python3 runner.py --count 1000       # Linux
-.venv/bin/python runner.py --count 1000   # macOS
+minichlink -w build-nyet-dataup-20us/firmware.bin flash -b
+sudo python3 runner.py --duplicate --count 1000
 ```
 
-Test `nyet`:
+Other images: `make build POLICY=name WORK_US=N`.
 
-```sh
-minichlink -w build-nyet-5us/firmware.bin flash -b
-sudo python3 runner.py --count 1000       # Linux
-.venv/bin/python runner.py --count 1000   # macOS
-```
+## Results
 
-Expected output in both cases:
+Each policy is one patch in `patches/`, applied to a copy of the sources at build time.
 
-```sh
-PASS
-  1000/1000 bursts echoed byte-for-byte
-  3078000 bytes written; 3078000 bytes received
-```
+| Policy | Change | 0 us | 1 us | 5 us | 20 us |
+|---|---|---|---|---|---|
+| `vanilla` | none | 1000/1000 | loss | loss (burst 310, 480) | – |
+| `nyet-dataup` | EP1 OUT armed with NYET, IN armed with one store | 1000/1000, dup | 1000/1000, dup | 5000/5000, dup | 100,000/100,000, dup |
+| `nyet` | EP1 OUT armed with NYET | – | – | 1000/1000 | loss on IN (burst 3930) |
+| `no-tog-ok` | EP1 OUT taken without checking `TOG_OK` | – | – | 1000/1000 | – |
+| `toggle-rx` | EP1 OUT taken on the RX auto toggle's flip | – | – | – | loss on IN (burst 4011) |
+| `toggle` | `toggle-rx`, IN armed with one store | 1000/1000, dup | 1000/1000, dup | 5000/5000, dup | 100,000/100,000, dup |
 
-Other interrupt durations can be generated with `make build WORK_US=N`. Run
-`make help` for all build options.
+"dup": the duplicate test passed (`runner.py --duplicate`, see [Host runner](#host-runner)). "–": not
+run. Devices: CH32V307VCT6 (macOS host) and CH32V307WCU6 (Linux host). `vanilla` loses from 1 us,
+and in almost every 1,000-burst run from 4 us. With the host writing and reading at once,
+`nyet-dataup` also runs 4 × 5000 bursts at 5 and 20 us without loss.
 
-## Forensics
+`no-tog-ok` is what WCH's NCM, ECM and RNDIS examples and
+[TinyUSB](https://github.com/hathach/tinyusb/blob/53f8c53c2cbd73a91a172f1ae35e9abc00eb5075/src/portable/wch/dcd_ch32_usbhs.c#L396-L416)
+do, but it passes a retransmitted packet to the application, which then gets the data twice.
+`toggle` keeps duplicate detection, but relies on the auto toggle, which has a hardware limit (see
+[below](#the-auto-toggle-and-a-shared-endpoint-number)). We recommend `nyet-dataup`.
 
-The failing signature was checked independently in device RAM and at the USB
-wire.
+## Why packets are lost
 
-The target was halted without reset immediately after two failures. The
-software ring had advanced by five slots rather than seven, was empty, and EP1
-IN was idle. The next unpublished RX DMA slot contained bytes 8 through 511 of
-P5, while its first six bytes matched P6. RX DMA still selected that slot and TX
-DMA selected the preceding, last-published slot. P5 and P6 had therefore
-reached the same RX DMA slot, where the short packet overwrote the start of the
-full packet, but neither was admitted to the software ring.
+### Reception: `TOG_OK` read too late
 
-An [USB sniffer](https://github.com/ataradov/usb-sniffer) was then placed between a
-macOS host and a CH32V307VCT6. Its 0 us control capture reconstructs all
-3,078,000 bytes from exactly 7,000 acknowledged OUT packets and 7,000
-acknowledged IN packets, byte-for-byte in both directions.
+The SIE raises a single transfer flag and describes the transaction in `INT_ST`: endpoint, token and
+`TOG_OK`, which says whether the packet had the expected toggle. A retransmitted packet has the
+wrong toggle, and WCH's handler drops packets without `TOG_OK`.
 
-The 5 us capture reproduces the 518-byte loss at burst 93. On the wire:
+While the flag is pending, the device NAKs every token (`INT_BUSY`), but `INT_ST` keeps changing. It
+describes the latest token on the bus, including one the device NAKed, and the flag rises before
+`MIS_ST.SIE_FREE`, while `TOG_OK` is not final. This was also reported, with a Cynthion analyzer, in
+[ch32-rs/ch32-hal#229](https://github.com/ch32-rs/ch32-hal/pull/229).
 
-- the final 512-byte packet, P5/DATA0, is acknowledged;
-- the 6-byte tail, P6/DATA1, first receives NAK;
-- after PING receives NAK and then ACK, the host repeats the identical
-  P6/DATA1, which the device acknowledges;
-- the device returns only P0 through P4 on IN, then answers subsequent IN
-  tokens with NAK.
+A handler entered late can therefore read the `TOG_OK` of the next packet, which the device NAKed.
+It takes the good packet for a retransmission and drops it. Its expected toggle does not move, so the
+next packet, when the host sends it again, is dropped too. Both were acknowledged on the wire.
 
-All seven logical OUT packets are therefore eventually acknowledged, with the
-expected payload and valid CRC, while P5 and P6 never reach the loopback
-output. The wire capture rules out malformed host payload and a wire-level CRC
-error. The RAM observations above additionally rule out the missing suffix
-being admitted to the software ring but blocked on EP1 IN.
+`nyet` keeps WCH's handler and its `TOG_OK` test. With NYET, the host must get a PING acknowledged
+before each OUT packet, and the device NAKs the PING while the flag is pending: the next OUT packet
+waits for the handler.
 
-Together, these observations localize the loss between USBHS reception and the
-vendor handler's admission of packets to its ring. They do not show what the
-delayed handler read; section 3 explains it. The capture is also not a lost-ACK
-experiment: the observed retry follows an explicit NAK.
-
-The validated PCAPNG files, runner result and capture helper are preserved in
-[`usb-capture/`](usb-capture/).
-
-## 3. A candidate that keeps duplicate detection
-
-Two more policies come from a closer look at what a late handler reads (below):
-
-| Policy | Change |
-|---|---|
-| `toggle-rx` | EP1 OUT: enable the RX auto toggle. On every transfer interrupt, whatever `INT_ST` shows, wait for `MIS_ST.SIE_FREE`, then take a packet only if the RX toggle has flipped |
-| `toggle` | `toggle-rx`, and `USBHS_Endp_DataUp` arms EP1 IN with one store instead of two |
-
-The SIE flips the RX toggle only for a packet it accepts. A retransmitted packet
-arrives with the wrong toggle: it is acknowledged and leaves the toggle as it is,
-so it is dropped. That is what the `TOG_OK` test was for.
-
-`runner.py --duplicate` checks that path before the bursts. The device takes a
-packet starting with `DUPTEST!` as a request to expect the other toggle, so the
-next packet looks like a retransmission. The echo must then lack exactly bytes 512
-to 1024, and the following bursts must be exact again.
-
-```sh
-make build POLICY=toggle WORK_US=20
-minichlink -w build-toggle-20us/firmware.bin flash -b
-sudo python3 runner.py --duplicate --count 1000       # Linux
-```
-
-Results on a CH32V307WCU6 with a Linux host ("–": not run):
-
-| Policy | 0 us | 1 us | 5 us | 20 us |
-|---|---|---|---|---|
-| `vanilla` | – | – | FAIL at burst 480: 2,560 of 3,078 bytes | – |
-| `toggle-rx` | – | – | – | FAIL on IN at burst 4011 |
-| `toggle` | duplicate dropped; 1000/1000 | duplicate dropped; 1000/1000 | duplicate dropped; 1000/1000, then 5000/5000 | duplicate dropped; 100,000/100,000 |
-
-`toggle` relies on the auto toggle, which has a hardware limit when one endpoint number carries
-both directions, as EP1 does here. Section 4 explains it, and the fix we recommend instead.
-
-### What a late handler reads
-
-An independent analysis made with a Cynthion analyzer for the Rust HAL
-([ch32-rs/ch32-hal#229](https://github.com/ch32-rs/ch32-hal/pull/229)) reports
-behaviour that matches the reception loss:
-
-- `INT_ST` describes the latest token on the bus, including one the SIE answered
-  with NAK, not the transaction that raised the transfer flag;
-- the flag is a single bit, so a late entry stands for more than one transaction;
-- the flag rises slightly before `MIS_ST.SIE_FREE`, while `TOG_OK` is not final.
-
-A handler delayed by a few microseconds can therefore read the `TOG_OK` of a later
-token, and leave out a packet the host has seen acknowledged.
-
-`INT_BUSY` works. On the wire, while the flag is pending, the device answers NAK
-to IN tokens and to OUT data; after a PING, the host sends the same OUT data again
-and it is accepted.
-
-### A second loss at 20 us, on IN
-
-With reception fixed and 20 us of competing work, IN loses packets too.
-`USBHS_Endp_DataUp` arms the endpoint with
+### Transmission at 20 us: `USBHS_Endp_DataUp` stores twice
 
 ```c
 USBHSD_UEP_TXCTRL( endp ) = (USBHSD_UEP_TXCTRL( endp ) &= ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_ACK;
 ```
 
-which compiles to one read and two stores of the same value
-(`lbu; andi; sb; sb`). `USBHS_UEP_T_RES_ACK` is 0, so the first store already arms
-the endpoint. If an interrupt falls between the two stores, a packet can go out,
-and its completion handler can flip the toggle and release the endpoint, before
-the second store writes back the old toggle and ACK. This takes a whole 512-byte
-packet between two instructions, which is why it shows only at 20 us.
+This compiles to one read and two stores of the same value (`lbu; andi; sb; sb`).
+`USBHS_UEP_T_RES_ACK` is 0, so the first store already arms the endpoint. If the competing
+interrupt falls between the two stores, a packet can go out and its completion handler can flip the
+toggle, before the second store writes back the old toggle. The next packet goes out with the same
+PID and the host drops it as a retransmission. It takes a whole 512-byte packet between two
+instructions, which is why it shows only at 20 us. One store fixes it.
 
-[`usb-capture/toggle-rx-20us-burst4011.pcapng`](usb-capture/toggle-rx-20us-burst4011.pcapng)
-shows one case. P4 goes out as DATA0 and is acknowledged. After three NAKs, the
-same P4 goes out again as DATA0 and the host drops it as a retransmission. P5 is
-never sent, and the IN side resumes with P6. `toggle` writes the register once,
-so the endpoint stays NAKed until that store.
+### The auto toggle and a shared endpoint number
 
-## 4. The fix we recommend: `nyet-dataup`
+`toggle` lets the SIE flip EP1's OUT toggle itself, and takes a packet when the toggle has flipped,
+read once the SIE is free. It does not depend on `INT_ST`.
 
-`nyet-dataup` makes one change per loss in WCH's code:
-
-| Loss | Change |
-|---|---|
-| Reception: a late handler reads the `TOG_OK` of a later token | EP1 OUT is armed with NYET instead of ACK (three lines, as `nyet`) |
-| Transmission at 20 us: `USBHS_Endp_DataUp` stores twice | EP1 IN is armed with one store (one line, as `toggle`) |
-
-WCH's reception stays as it is: manual toggle and `TOG_OK` test. With NYET, the host must get a PING
-acknowledged before each OUT packet, and the device NAKs it while the transfer flag is pending. The
-patch also carries the hook of the duplicate test.
-
-```sh
-make build POLICY=nyet-dataup WORK_US=20
-minichlink -w build-nyet-dataup-20us/firmware.bin flash -b
-sudo python3 runner.py --duplicate --count 1000       # Linux
-```
-
-Results on a CH32V307WCU6 with a Linux host:
-
-| Policy | 0 us | 1 us | 5 us | 20 us |
-|---|---|---|---|---|
-| `nyet-dataup` | duplicate dropped; 1000/1000 | duplicate dropped; 1000/1000 | duplicate dropped; 5000/5000 | duplicate dropped; 100,000/100,000 |
-
-With the host writing and reading at once (our own runner), 4 × 5000 bursts at 5 us and at 20 us: no
-loss.
-
-Both changes are needed. `nyet` alone, with WCH's two stores, loses on IN at 20 us: burst 3930,
-[1024:1536] missing. In [`usb-capture/nyet-20us-burst3930.pcapng`](usb-capture/nyet-20us-burst3930.pcapng),
-after one NAK, P2 goes out as DATA1 like P1 before it, and the host drops it as a retransmission.
-
-### The limit of the auto toggle
-
-On the CH32V307, with the auto toggle, a CPU write to an endpoint's IN side (`UEPn_TX_LEN`,
+But on the CH32V307, with the auto toggle, a CPU write to an endpoint's IN side (`UEPn_TX_LEN`,
 `UEPn_TX_CTRL`) made as the SIE flips the toggle of the same number's OUT side undoes the flip. The
 OUT packet is acknowledged but not taken, and the host's next packet, which now looks like a
 retransmission, is acknowledged and dropped. Two OUT packets are lost.
 
-`toggle` takes EP1 OUT packets on that flip while the main loop arms EP1 IN. This loopback alone did
-not show the loss in 100,000 bursts. With a second bulk loopback busy at the same time (EP3 to EP4, the
-host writing and reading at once), `toggle` loses two OUT packets at 20 us, and at 5 us with the auto
+Here EP1 carries both directions and the main loop arms EP1 IN. This loopback alone did not show the
+loss in 100,000 bursts. With a second bulk loopback busy at the same time (EP3 to EP4, the host
+writing and reading at once), `toggle` loses two OUT packets at 20 us, and at 5 us with the auto
 toggle on IN as well. The loss goes away when EP1 IN moves to EP2, or when EP1 IN is armed only inside
 the interrupt, while the pending flag makes the device NAK every token.
 
-That last version shows the cause. Its main loop is given one more line, which rewrites `UEP1_TX_LEN`
-with its own value, interrupts off: two OUT packets are lost within the first two bursts, with no
-competing work. The same line on `UEP2_TX_LEN`, or on `UEP1_TX_LEN` with manual toggles as in `nyet`,
-loses none in 10,000 bursts. `nyet-dataup` keeps manual toggles and is not exposed. (These two-loop
-variants are not in this repository yet.)
+That last version shows the cause. Its main loop is given one more line, which rewrites
+`UEP1_TX_LEN` with its own value, interrupts off: two OUT packets are lost within the first two
+bursts, with no competing work. The same line on `UEP2_TX_LEN`, or on `UEP1_TX_LEN` with manual
+toggles as in `nyet`, loses none in 10,000 bursts. `nyet-dataup` keeps manual toggles and is not
+exposed. (These two-loop variants are not in this repository yet.)
+
+## Evidence
+
+The captures and how to read them are in [`usb-capture/`](usb-capture/README.md).
+
+- Reception, `vanilla` at 5 us, macOS host. The 0 us control capture rebuilds all 3,078,000 bytes
+  from 7,000 acknowledged OUT and 7,000 acknowledged IN packets. In the failing capture (burst 93),
+  P5 is acknowledged; P6 is NAKed, then sent again after a PING and acknowledged; the device returns
+  P0 to P4 only. Neither capture has a CRC or PID error.
+- Reception, in RAM. Halted without reset after a failure, the board shows the ring advanced by five
+  slots instead of seven, empty, and EP1 IN idle. P5 and P6 went to the same RX DMA slot, where the
+  short P6 overwrote the start of P5, and neither was admitted to the ring.
+- Transmission: `toggle-rx-20us-burst4011.pcapng` (P4 goes out twice as DATA0, P5 never) and
+  `nyet-20us-burst3930.pcapng` (after one NAK, P2 goes out as DATA1 like P1, and the host drops it).
+
+## Details
+
+### Firmware
+
+The `sdk/` submodule is WCH's SDK at `69a2eec903b4f919fcb73d1ab6c10c690780e4d1`; the example is
+`sdk/EVT/EXAM/USB/USBHS/DEVICE/CH372Device/User`. Seven files in `src/` are byte-identical to it,
+and `make check` verifies them with `cmp` before every build. WCH's EP1 OUT handler is at
+[`ch32v30x_usbhs_device.c`, lines 447-466](https://github.com/openwch/ch32v307/blob/69a2eec903b4f919fcb73d1ab6c10c690780e4d1/EVT/EXAM/USB/USBHS/DEVICE/CH372Device/User/ch32v30x_usbhs_device.c#L447-L466).
+WCH's main loop itself briefly disables `USBHS_IRQn`, so its endpoint code already has to tolerate
+some interrupt latency.
+
+The application changes are:
+- `main.c` drops the startup UART messages and starts the competing interrupt after USB init; the
+  loopback body is unchanged;
+- `competing_irq.c` sets `USBHS_IRQn` and `TIM2_IRQn` to priority 0/0 (the USB default, made
+  explicit) and runs TIM2 every 997 us. Its handler acknowledges TIM2 and waits `WORK_US` on TIM3, a
+  free-running 24 MHz timer it only reads. Neither timer touches a USB register.
+
+997 us is not a multiple of the 125 us microframe: the phase moves by 3 us each period, so the
+interrupt meets USB events at every point. The 0 us image still takes the interrupt; only the time
+spent in it changes. The core runs at 96 MHz, as in WCH's example: 5 us is about 480 cycles, 4% of a
+microframe. The image links with WCH's generic `Link.ld` (288 KiB flash / 32 KiB RAM) and uses about
+10 KiB of RAM.
+
+### Host runner
+
+Each burst is indexed ASCII records (`000000|ABCDEFGHIJ`, ...), written with one
+`device.write(0x01, …)` and read back with one `device.read(0x81, 3078)`, 2 s each. A short or
+modified echo, including a partial read cut by the deadline, is `FAIL integrity`; a USB error or an
+incomplete write is `FAIL abort`; a setup failure is `INVALID`. An integrity failure writes
+`ch372-fail-<UTC>.json` and `ch372-fail-<UTC>-received.bin` (`--no-artifacts` turns that off).
+
+`--duplicate` first sends a burst whose first packet starts with `DUPTEST!`. The `toggle` and
+`nyet-dataup` images then expect the other toggle, so the host's next packet looks like a
+retransmission: the echo must lack exactly bytes 512 to 1024, and the following bursts must be exact.
+
+### Setup
+
+`make toolchain` fetches WCH GCC 12.2.0 from Community-PIO, for
+[macOS](https://github.com/Community-PIO-CH32V/toolchain-riscv-mac) or
+[Linux x86-64](https://github.com/Community-PIO-CH32V/toolchain-riscv-linux). These packages match
+the GCC 12.2.0 of WCH's [MRS2 Toolchain & Debugger 2.4.0](https://www.mounriver.com/download): the
+Linux build components are byte-for-byte identical, and on macOS both build identical firmware.
+
+On Linux, run the runner with `sudo`, or add a udev rule for `1a86:5537`. On macOS:
+
+```sh
+brew install libusb python
+git submodule update --init
+make toolchain
+make
+python3 -m venv .venv
+.venv/bin/python -m pip install pyusb
+.venv/bin/python runner.py --count 1000
+```
 
 ## License
 
