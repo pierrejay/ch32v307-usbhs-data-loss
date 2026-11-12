@@ -73,10 +73,9 @@ Each policy is one patch in `patches/`, applied to a copy of the sources at buil
 | `toggle` | `toggle-rx`, IN armed with one store | 1000/1000, dup | 1000/1000, dup | 5000/5000, dup | 100,000/100,000, dup |
 
 "dup": the duplicate test passed (`runner.py --duplicate`, see [Host runner](#host-runner)). "–": not
-run. Devices: CH32V307VCT6 and CH32V307WCU6 (macOS host), CH32V307VCT6 (Linux host). The first tests
-reported losses from 1 us; the measurements here document them at 5 us. With the host writing and
-reading at once,
-`nyet-dataup` also runs 4 × 5000 bursts at 5 and 20 us without loss.
+run. Linux host, CH32V307VCT6; the loss also reproduces on macOS and on a CH32V307WCU6. The first
+tests reported losses from 1 us; the measurements here document them at 5 us. With the host writing
+and reading at once, `nyet-dataup` also runs 4 × 5000 bursts at 5 and 20 us without loss.
 
 ## Fix
 
@@ -151,11 +150,11 @@ toggle on IN as well. The loss goes away when EP1 IN moves to EP2, or when EP1 I
 the interrupt, while the pending flag makes the device NAK every token.
 
 That last version shows the cause. Its main loop is given one more line, which rewrites
-`UEP1_TX_LEN` with its own value, interrupts off (one 16-bit read and store; `RX_CTRL` is never
-written): two OUT packets are lost within the first bursts, with no competing work. The same line on
-`UEP2_TX_LEN` loses none in 10,000 bursts. On `UEP1_TX_LEN`, the `nyet` variant (manual toggles, but
-also NYET and IN armed from the main loop) loses none either. `nyet-dataup` keeps manual toggles and
-is not exposed. The two-loop images and their results are on the
+`UEP1_TX_LEN` with its own value, interrupts off (one 16-bit read and store; the line does not
+write `RX_CTRL`): two OUT packets are lost within the first bursts, with no competing work. The same
+line on `UEP2_TX_LEN` loses none in 10,000 bursts. On `UEP1_TX_LEN`, the `nyet` variant (manual
+toggles, but also NYET and IN armed from the main loop) loses none either. `nyet-dataup` keeps manual
+toggles and is not exposed. The two-loop images and their results are on the
 [`multi-endpoint`](https://github.com/pierrejay/ch32v307-usbhs-data-loss/tree/multi-endpoint) branch.
 
 ## Evidence
@@ -169,7 +168,7 @@ The captures and how to read them are in [`usb-capture/`](usb-capture/README.md)
 - Reception, in RAM. Halted without reset after a failure, the board shows the ring advanced by five
   slots instead of seven, empty, and EP1 IN idle. P5 and P6 went to the same RX DMA slot, where the
   short P6 overwrote the start of P5, and neither was admitted to the ring.
-- Transmission: `toggle-rx-20us-burst4011.pcapng` (P4 goes out twice as DATA0, P5 never) and
+- Transmission: `toggle-rx-20us-burst4011.pcapng` (P3 goes out twice as DATA0, P4 never) and
   `nyet-20us-burst3930.pcapng` (after one NAK, P2 goes out as DATA1 like P1, and the host drops it).
 
 ## Details
