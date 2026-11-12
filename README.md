@@ -93,9 +93,8 @@ and needs no PING. But an IN and an OUT must then not share an endpoint number (
 tests it with both of the example's loopbacks busy: no loss at 5 and 20 us. The ch32-hal driver works
 the same way.
 
-`no-tog-ok` is not a fix: like WCH's NCM, ECM and RNDIS examples and
-[TinyUSB](https://github.com/hathach/tinyusb/blob/53f8c53c2cbd73a91a172f1ae35e9abc00eb5075/src/portable/wch/dcd_ch32_usbhs.c#L396-L416),
-it passes a retransmitted packet to the application, which then gets the data twice.
+`no-tog-ok` is not a fix: like WCH's NCM, ECM and RNDIS examples, it passes a retransmitted packet
+to the application, which then gets the data twice.
 
 ## Why packets are lost
 
