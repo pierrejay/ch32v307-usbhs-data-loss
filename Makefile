@@ -14,7 +14,7 @@ SIZE := $(CROSS)size
 # Microseconds spent in the competing TIM2 ISR. This is the experiment's only knob.
 WORK_US ?= 0
 POLICY ?= vanilla
-POLICIES := vanilla no-tog-ok nyet toggle-rx toggle
+POLICIES := vanilla no-tog-ok nyet nyet-dataup toggle-rx toggle
 
 ifeq ($(filter $(POLICY),$(POLICIES)),)
 $(error POLICY must be one of: $(POLICIES))
@@ -80,6 +80,7 @@ help:
 		'  POLICY=vanilla               Unmodified WCH EP1 OUT handling (default)' \
 		'  POLICY=no-tog-ok              Accept EP1 OUT without checking TOG_OK' \
 		'  POLICY=nyet                   Keep TOG_OK and arm EP1 OUT with NYET' \
+		'  POLICY=nyet-dataup            nyet, and arm EP1 IN with one store' \
 		'  POLICY=toggle-rx              Take EP1 OUT on its auto-toggled RX toggle flip' \
 		'  POLICY=toggle                 toggle-rx, and arm EP1 IN with one store' \
 		'  WORK_US=N                     Work in the competing TIM2 ISR, in us (default: 0)' \
@@ -97,6 +98,7 @@ all:
 	$(MAKE) POLICY=vanilla WORK_US=5 build
 	$(MAKE) POLICY=no-tog-ok WORK_US=5 build
 	$(MAKE) POLICY=nyet WORK_US=5 build
+	$(MAKE) POLICY=nyet-dataup WORK_US=20 build
 	$(MAKE) POLICY=toggle WORK_US=5 build
 	$(MAKE) POLICY=toggle-rx WORK_US=20 build
 	$(MAKE) POLICY=toggle WORK_US=20 build

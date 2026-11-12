@@ -18,7 +18,7 @@ interrupt at the same priority delays USBHS processing:
 
 The base WCH USBHS driver, endpoint handling, descriptors and loopback body are
 copied unchanged. The test adds one periodic timer interrupt, one dedicated
-read-only timebase, four optional patches and one host-side comparator.
+read-only timebase, five optional patches and one host-side comparator.
 
 ## Firmware
 
@@ -310,6 +310,9 @@ Results on a CH32V307WCU6 with a Linux host ("–": not run):
 | `toggle-rx` | – | – | – | FAIL on IN at burst 4011 |
 | `toggle` | duplicate dropped; 1000/1000 | duplicate dropped; 1000/1000 | duplicate dropped; 1000/1000, then 5000/5000 | duplicate dropped; 100,000/100,000 |
 
+`toggle` relies on the auto toggle, which has a hardware limit when one endpoint number carries
+both directions, as EP1 does here. Section 4 explains it, and the fix we recommend instead.
+
 ### What a late handler reads
 
 An independent analysis made with a Cynthion analyzer for the Rust HAL
@@ -349,6 +352,57 @@ shows one case. P4 goes out as DATA0 and is acknowledged. After three NAKs, the
 same P4 goes out again as DATA0 and the host drops it as a retransmission. P5 is
 never sent, and the IN side resumes with P6. `toggle` writes the register once,
 so the endpoint stays NAKed until that store.
+
+## 4. The fix we recommend: `nyet-dataup`
+
+`nyet-dataup` makes one change per loss in WCH's code:
+
+| Loss | Change |
+|---|---|
+| Reception: a late handler reads the `TOG_OK` of a later token | EP1 OUT is armed with NYET instead of ACK (three lines, as `nyet`) |
+| Transmission at 20 us: `USBHS_Endp_DataUp` stores twice | EP1 IN is armed with one store (one line, as `toggle`) |
+
+WCH's reception stays as it is: manual toggle and `TOG_OK` test. With NYET, the host must get a PING
+acknowledged before each OUT packet, and the device NAKs it while the transfer flag is pending. The
+patch also carries the hook of the duplicate test.
+
+```sh
+make build POLICY=nyet-dataup WORK_US=20
+minichlink -w build-nyet-dataup-20us/firmware.bin flash -b
+sudo python3 runner.py --duplicate --count 1000       # Linux
+```
+
+Results on a CH32V307WCU6 with a Linux host:
+
+| Policy | 0 us | 1 us | 5 us | 20 us |
+|---|---|---|---|---|
+| `nyet-dataup` | duplicate dropped; 1000/1000 | duplicate dropped; 1000/1000 | duplicate dropped; 5000/5000 | duplicate dropped; 100,000/100,000 |
+
+With the host writing and reading at once (our own runner), 4 × 5000 bursts at 5 us and at 20 us: no
+loss.
+
+Both changes are needed. `nyet` alone, with WCH's two stores, loses on IN at 20 us: burst 3930,
+[1024:1536] missing. In [`usb-capture/nyet-20us-burst3930.pcapng`](usb-capture/nyet-20us-burst3930.pcapng),
+after one NAK, P2 goes out as DATA1 like P1 before it, and the host drops it as a retransmission.
+
+### The limit of the auto toggle
+
+On the CH32V307, with the auto toggle, a CPU write to an endpoint's IN side (`UEPn_TX_LEN`,
+`UEPn_TX_CTRL`) made as the SIE flips the toggle of the same number's OUT side undoes the flip. The
+OUT packet is acknowledged but not taken, and the host's next packet, which now looks like a
+retransmission, is acknowledged and dropped. Two OUT packets are lost.
+
+`toggle` takes EP1 OUT packets on that flip while the main loop arms EP1 IN. This loopback alone did
+not show the loss in 100,000 bursts. With a second bulk loopback busy at the same time (EP3 to EP4, the
+host writing and reading at once), `toggle` loses two OUT packets at 20 us, and at 5 us with the auto
+toggle on IN as well. The loss goes away when EP1 IN moves to EP2, or when EP1 IN is armed only inside
+the interrupt, while the pending flag makes the device NAK every token.
+
+That last version shows the cause. Its main loop is given one more line, which rewrites `UEP1_TX_LEN`
+with its own value, interrupts off: two OUT packets are lost within the first two bursts, with no
+competing work. The same line on `UEP2_TX_LEN`, or on `UEP1_TX_LEN` with manual toggles as in `nyet`,
+loses none in 10,000 bursts. `nyet-dataup` keeps manual toggles and is not exposed. (These two-loop
+variants are not in this repository yet.)
 
 ## License
 

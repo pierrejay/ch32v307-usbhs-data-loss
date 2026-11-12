@@ -23,6 +23,7 @@ The DUT binaries came from repository commit
 | `failure-5us.json` | Unmodified runner failure report |
 | `failure-5us-received.bin` | The 2,560 bytes returned by the device |
 | `toggle-rx-20us-burst4011.pcapng` | `toggle-rx` at 20 us on a CH32V307WCU6, Linux host, same sniffer: 1 ms before and after burst 4011, where P4 goes out twice as DATA0 and P5 never (README section 3) |
+| `nyet-20us-burst3930.pcapng` | `nyet` at 20 us on a CH32V307WCU6, Linux host, same sniffer: 1 ms before and after burst 3930, where P2 goes out as DATA1 like P1 and is dropped by the host (README section 4) |
 
 The captures have complete PCAPNG blocks. Neither the control nor the failure
 contains a sniffer overflow report or a Wireshark CRC5, CRC16, PID or PID

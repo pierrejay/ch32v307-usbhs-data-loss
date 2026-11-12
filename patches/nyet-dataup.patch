@@ -1,0 +1,59 @@
+--- a/ch32v30x_usbhs_device.c
++++ b/ch32v30x_usbhs_device.c
+@@ -165,7 +165,7 @@
+     USBHSD->UEP0_TX_CTRL = USBHS_UEP_T_RES_NAK;
+     USBHSD->UEP0_RX_CTRL = USBHS_UEP_R_RES_ACK;
+ 
+-    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_ACK;
++    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_NYET;
+     USBHSD->UEP3_RX_CTRL = USBHS_UEP_R_RES_ACK;
+     USBHSD->UEP5_RX_CTRL = USBHS_UEP_R_RES_ACK;
+ 
+@@ -304,7 +304,10 @@
+                 USBHS_Endp_Busy[ endp ] |= DEF_UEP_BUSY;
+                 /* end-point n response tx ack */
+                 USBHSD_UEP_TLEN( endp ) = len;
+-                USBHSD_UEP_TXCTRL( endp ) = (USBHSD_UEP_TXCTRL( endp ) &= ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_ACK;
++                /* One store. The original stored twice, and the first store already armed the
++                 * endpoint (ACK is 0): a packet and its completion could fall between the two,
++                 * and the second wrote back the toggle as it was before the packet. */
++                USBHSD_UEP_TXCTRL( endp ) = (USBHSD_UEP_TXCTRL( endp ) & ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_ACK;
+             }
+             else
+             {
+@@ -449,6 +452,13 @@
+                         {
+                             /* Write In Buffer */
+                             USBHSD->UEP1_RX_CTRL ^= USBHS_UEP_R_TOG_DATA1;
++                            /* Duplicate test (runner.py --duplicate): after a packet starting with
++                             * DUPTEST!, keep the toggle as it was, so that the host's next packet
++                             * looks like a retransmission, to be acknowledged and dropped. */
++                            if( memcmp( &Data_Buffer[ ( RingBuffer_Comm.LoadPtr ) * DEF_USBD_HS_PACK_SIZE ], "DUPTEST!", 8 ) == 0 )
++                            {
++                                USBHSD->UEP1_RX_CTRL ^= USBHS_UEP_R_TOG_DATA1;
++                            }
+                             RingBuffer_Comm.PackLen[RingBuffer_Comm.LoadPtr] = USBHSD->RX_LEN;
+                             RingBuffer_Comm.LoadPtr ++;
+                             if(RingBuffer_Comm.LoadPtr == DEF_Ring_Buffer_Max_Blks)
+@@ -704,8 +714,8 @@
+                             switch( (uint8_t)(USBHS_SetupReqIndex&0xFF) )
+                             {
+                                 case (DEF_UEP1 | DEF_UEP_OUT):
+-                                    /* Set End-point 1 OUT ACK */
+-                                    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_ACK;
++                                    /* Set End-point 1 OUT NYET */
++                                    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_NYET;
+                                     break;
+ 
+                                 case (DEF_UEP1 | DEF_UEP_IN):
+--- a/main.c
++++ b/main.c
+@@ -74,7 +74,7 @@
+                 if(RingBuffer_Comm.StopFlag)
+                 {
+                     RingBuffer_Comm.StopFlag = 0;
+-                    USBHSD->UEP1_RX_CTRL = (USBHSD->UEP1_RX_CTRL & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
++                    USBHSD->UEP1_RX_CTRL = (USBHSD->UEP1_RX_CTRL & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_NYET;
+                 }
+             }
+         }
