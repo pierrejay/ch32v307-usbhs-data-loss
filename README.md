@@ -10,6 +10,15 @@ It shows the hardware limit described in `main`'s README
 with the auto toggle, when one endpoint number carries both directions, a CPU write to its IN side
 can undo the SIE's flip of its OUT toggle, and two OUT packets are lost.
 
+## Recommended fix
+
+The auto toggle, with each endpoint on its own number: `multi-toggle-split`, which is `main`'s
+`toggle` with EP1's IN on 0x82. With both loopbacks busy, it loses nothing at 5 and 20 us, and the
+host sends no PING before every OUT packet. `multi-nyet` (`main`'s `nyet-dataup`) holds too, without
+moving any endpoint, at the cost of that PING.
+
+What fails is the auto toggle while EP1 carries both directions (`multi-toggle`, `multi-toggle-in`).
+
 ## What changes
 
 - WCH's example has a second loopback: the interrupt handler sends every EP3 OUT packet back
@@ -37,14 +46,13 @@ CH32V307WCU6, Linux host, 4 runs of 5000 bursts or the first failure:
 | `multi-vanilla` | WCH's (`TOG_OK`) | 0x81, from the main loop | loss (burst 1443) | loss (burst 6) |
 | `multi-nyet` | `nyet` | 0x81, from the main loop | 4 × 5000 | 4 × 5000 |
 | `multi-toggle` | `toggle` | 0x81, from the main loop | 4 × 5000 | loss (run 4, burst 4495) |
-| `multi-toggle-split` | `toggle` | 0x82, from the main loop | – | 4 × 5000 |
+| `multi-toggle-split` (recommended) | `toggle` | 0x82, from the main loop | 4 × 5000 | 4 × 5000 |
 | `multi-toggle-in` | `toggle`, auto toggle on IN too | 0x81, from the main loop | loss (twice) | – |
 | `multi-toggle-in-split` | the same | 0x82, from the main loop | 4 × 5000 | – |
 | `multi-toggle-in-isr` | the same | 0x81, in the interrupt only | 4 × 5000 | – |
 
-Every `toggle` loss is two OUT packets on EP1: the 6-byte tail and the next packet. Moving EP1 IN to
-another number, or arming it only while the pending flag makes the device NAK every token, removes
-the loss.
+Every `toggle` loss is two OUT packets on EP1: the 6-byte tail and the next packet. Arming EP1 IN
+only inside the interrupt, while the pending flag makes the device NAK every token, also avoids it.
 
 ## The cause, with no delayed interrupt
 
