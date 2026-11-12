@@ -73,8 +73,9 @@ Each policy is one patch in `patches/`, applied to a copy of the sources at buil
 | `toggle` | `toggle-rx`, IN armed with one store | 1000/1000, dup | 1000/1000, dup | 5000/5000, dup | 100,000/100,000, dup |
 
 "dup": the duplicate test passed (`runner.py --duplicate`, see [Host runner](#host-runner)). "–": not
-run. Devices: CH32V307VCT6 and CH32V307WCU6 (macOS host), CH32V307VCT6 (Linux host). `vanilla` loses from 1 us,
-and in almost every 1,000-burst run from 4 us. With the host writing and reading at once,
+run. Devices: CH32V307VCT6 and CH32V307WCU6 (macOS host), CH32V307VCT6 (Linux host). The first tests
+reported losses from 1 us; the measurements here document them at 5 us. With the host writing and
+reading at once,
 `nyet-dataup` also runs 4 × 5000 bursts at 5 and 20 us without loss.
 
 ## Fix
@@ -82,7 +83,9 @@ and in almost every 1,000-burst run from 4 us. With the host writing and reading
 **For this example as it is: `nyet-dataup`.** Four lines, one per cause, and the endpoints stay. EP1
 OUT is armed with NYET instead of ACK, which keeps WCH's `TOG_OK` test valid (see
 [Reception](#reception-tog_ok-read-too-late)), and `USBHS_Endp_DataUp` arms IN with one store. The
-cost: the host sends a PING before every OUT packet.
+cost: the host sends a PING before every OUT packet. The patch also carries the hook of the duplicate
+test (`DUPTEST!`), which drops a packet on purpose: leave that part out when applying the fix to an
+application.
 
 **Preferred if the endpoints can change: the auto toggle, each endpoint on its own number.** The SIE
 flips the OUT toggle itself, and the handler takes a packet when the toggle has flipped (`toggle`,
@@ -136,9 +139,10 @@ instructions, which is why it shows only at 20 us. One store fixes it.
 read once the SIE is free. It does not depend on `INT_ST`.
 
 But on the CH32V307, with the auto toggle, a CPU write to an endpoint's IN side (`UEPn_TX_LEN`,
-`UEPn_TX_CTRL`) made as the SIE flips the toggle of the same number's OUT side undoes the flip. The
-OUT packet is acknowledged but not taken, and the host's next packet, which now looks like a
-retransmission, is acknowledged and dropped. Two OUT packets are lost.
+`UEPn_TX_CTRL`) can leave the OUT toggle of the same number unchanged after an acknowledged packet,
+consistent with a race between the CPU's register write and the SIE's toggle update. The OUT packet
+is acknowledged but not taken, and the host's next packet, which now looks like a retransmission, is
+acknowledged and dropped. Two OUT packets are lost.
 
 Here EP1 carries both directions and the main loop arms EP1 IN. This loopback alone did not show the
 loss in 100,000 bursts. With a second bulk loopback busy at the same time (EP3 to EP4, the host
@@ -147,10 +151,11 @@ toggle on IN as well. The loss goes away when EP1 IN moves to EP2, or when EP1 I
 the interrupt, while the pending flag makes the device NAK every token.
 
 That last version shows the cause. Its main loop is given one more line, which rewrites
-`UEP1_TX_LEN` with its own value, interrupts off: two OUT packets are lost within the first two
-bursts, with no competing work. The same line on `UEP2_TX_LEN`, or on `UEP1_TX_LEN` with manual
-toggles as in `nyet`, loses none in 10,000 bursts. `nyet-dataup` keeps manual toggles and is not
-exposed. The two-loop images and their results are on the
+`UEP1_TX_LEN` with its own value, interrupts off (one 16-bit read and store; `RX_CTRL` is never
+written): two OUT packets are lost within the first bursts, with no competing work. The same line on
+`UEP2_TX_LEN` loses none in 10,000 bursts. On `UEP1_TX_LEN`, the `nyet` variant (manual toggles, but
+also NYET and IN armed from the main loop) loses none either. `nyet-dataup` keeps manual toggles and
+is not exposed. The two-loop images and their results are on the
 [`multi-endpoint`](https://github.com/pierrejay/ch32v307-usbhs-data-loss/tree/multi-endpoint) branch.
 
 ## Evidence
