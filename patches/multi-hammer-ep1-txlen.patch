@@ -71,8 +71,8 @@
 +        USBHSD->UEP4_TX_LEN = len;
 +        USBHSD->UEP4_TX_CTRL = (USBHSD->UEP4_TX_CTRL & ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_ACK;
 +    }
-+    /* toggle-in-isr: EP1 IN is armed here, never from the main loop, so the CPU writes EP1's
-+     * registers only while the pending flag holds the SIE off (it NAKs every token). */
++    /* toggle-in-isr: EP1 IN is armed here, while the pending flag holds the SIE off (it NAKs
++     * every token). This image's main loop adds one EP1 write on purpose: see main.c. */
 +    if( USBHS_DevEnumStatus && RingBuffer_Comm.RemainPack && ( ( USBHS_Endp_Busy[ DEF_UEP1 ] & DEF_UEP_BUSY ) == 0 ) )
 +    {
 +        if( USBHS_Endp_DataUp( DEF_UEP1, &Data_Buffer[ ( RingBuffer_Comm.DealPtr ) * DEF_USBD_HS_PACK_SIZE ],

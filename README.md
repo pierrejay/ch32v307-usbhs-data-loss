@@ -59,9 +59,9 @@ only inside the interrupt, while the pending flag makes the device NAK every tok
 The `multi-hammer-*` images start from `multi-toggle-in-isr`, which loses nothing, and add one line
 to the main loop: it rewrites a register with its own value, interrupts off. No competing work
 (0 us), on two chips and two host ports. In each column, board, cable and host stay the same. The
-`UEP1` and `UEP2` rows differ only by the register rewritten (one 16-bit read and store; `RX_CTRL` is
-never written). The last row is a separate control: the same line on `multi-nyet`, which has manual
-toggles but also NYET and EP1 IN armed from the main loop:
+`UEP1_TX_LEN` and `UEP2_TX_LEN` rows differ only by the register rewritten (one 16-bit read and
+store; the line does not write `RX_CTRL`). The last row is a separate control: the same line on
+`multi-nyet`, which has manual toggles but also NYET and EP1 IN armed from the main loop:
 
 | Image | Register rewritten | VCT6, behind the hub | VCT6, root port | WCU6, root port |
 |---|---|---|---|---|
