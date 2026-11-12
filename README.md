@@ -136,7 +136,8 @@ That last version shows the cause. Its main loop is given one more line, which r
 `UEP1_TX_LEN` with its own value, interrupts off: two OUT packets are lost within the first two
 bursts, with no competing work. The same line on `UEP2_TX_LEN`, or on `UEP1_TX_LEN` with manual
 toggles as in `nyet`, loses none in 10,000 bursts. `nyet-dataup` keeps manual toggles and is not
-exposed. (These two-loop variants are not in this repository yet.)
+exposed. The two-loop images and their results are on the
+[`multi-endpoint`](https://github.com/pierrejay/ch32v307-usbhs-data-loss/tree/multi-endpoint#two-loops-at-once) branch.
 
 ## Evidence
 
