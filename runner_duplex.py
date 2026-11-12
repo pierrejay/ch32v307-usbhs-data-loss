@@ -22,6 +22,8 @@ VID, PID = '1a86', '5537'
 EP_OUT, EP_IN = 0x01, 0x81
 RECORDS_PER_BURST, RECORD_SIZE = 171, 18
 BURST_SIZE = RECORDS_PER_BURST * RECORD_SIZE  # 3078 = 6 * 512 + 6
+# Records are numbered with six digits: beyond this many bursts, an index would take a seventh.
+MAX_BURSTS = 999999 // RECORDS_PER_BURST
 
 
 class Urb(ctypes.Structure):
@@ -333,6 +335,10 @@ def main():
     parser.add_argument('--ep-in', type=lambda s: int(s, 0), default=0x81, help='the IN endpoint of the first loopback')
     parser.add_argument('--auto-eps', action='store_true', help='take the endpoints from the descriptors')
     args = parser.parse_args()
+    if not 1 <= args.count <= MAX_BURSTS:
+        parser.error(f'--count must be between 1 and {MAX_BURSTS}; run longer tests as several invocations')
+    if args.timeout < 1:
+        parser.error('--timeout must be positive')
     # Four threads share the interpreter: hand it over fast, so that each USB completion is acted on promptly.
     sys.setswitchinterval(0.0001)
     EP_IN = args.ep_in

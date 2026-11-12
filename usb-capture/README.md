@@ -1,6 +1,7 @@
 # USB wire captures
 
-These files record the USB High-Speed wire-level validation performed with:
+The first files (`control-0us`, `failure-5us*`) record the USB High-Speed wire-level validation
+performed with:
 
 - CH32V307VCT6 (UUID `72-a2-28-e7-d8-34-3c-ab`)
 - MacBook Pro M1 2021, macOS 15.4 arm64
@@ -11,7 +12,7 @@ These files record the USB High-Speed wire-level validation performed with:
 - Wireshark/TShark 4.4.3
 
 The DUT binaries came from repository commit
-`c96fe04bc93217ba02573727a15b9f8e6d9ed6c0`.
+`c96fe04bc93217ba02573727a15b9f8e6d9ed6c0`. Later captures are described separately in the table.
 
 ## Files
 
@@ -22,8 +23,8 @@ The DUT binaries came from repository commit
 | `failure-5us-burst93.pcapng` | Original frames 5358–5438 extracted from the failing capture; frame numbers are renumbered |
 | `failure-5us.json` | Unmodified runner failure report |
 | `failure-5us-received.bin` | The 2,560 bytes returned by the device |
-| `toggle-rx-20us-burst4011.pcapng` | `toggle-rx` at 20 us on a CH32V307VCT6, Linux host, same sniffer: 1 ms before and after burst 4011, where P4 goes out twice as DATA0 and P5 never (README section 3) |
-| `nyet-20us-burst3930.pcapng` | `nyet` at 20 us on a CH32V307VCT6, Linux host, same sniffer: 1 ms before and after burst 3930, where P2 goes out as DATA1 like P1 and is dropped by the host (README section 4) |
+| `toggle-rx-20us-burst4011.pcapng` | `toggle-rx` (commit `3e15681`) at 20 us on a CH32V307VCT6, Linux host, same sniffer; image linked behind that board's bootloader, sources otherwise as in the repository: 1 ms before and after burst 4011, where P4 goes out twice as DATA0 and P5 never (README, [Transmission at 20 us](../README.md#transmission-at-20-us-usbhs_endp_dataup-stores-twice)) |
+| `nyet-20us-burst3930.pcapng` | `nyet` (commit `6625d98`) at 20 us on a CH32V307VCT6, Linux host, same sniffer; image linked behind that board's bootloader, sources otherwise as in the repository: 1 ms before and after burst 3930, where P2 goes out as DATA1 like P1 and is dropped by the host (README, [Transmission at 20 us](../README.md#transmission-at-20-us-usbhs_endp_dataup-stores-twice)) |
 
 The captures have complete PCAPNG blocks. Neither the control nor the failure
 contains a sniffer overflow report or a Wireshark CRC5, CRC16, PID or PID

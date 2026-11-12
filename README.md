@@ -8,7 +8,7 @@ described here.
 It shows the hardware limit described in `main`'s README
 ([The auto toggle and a shared endpoint number](https://github.com/pierrejay/ch32v307-usbhs-data-loss#the-auto-toggle-and-a-shared-endpoint-number)):
 with the auto toggle, when one endpoint number carries both directions, a CPU write to its IN side
-can undo the SIE's flip of its OUT toggle, and two OUT packets are lost.
+can leave its OUT toggle unchanged after an acknowledged packet, and two OUT packets are lost.
 
 ## Recommended fix
 
@@ -58,8 +58,10 @@ only inside the interrupt, while the pending flag makes the device NAK every tok
 
 The `multi-hammer-*` images start from `multi-toggle-in-isr`, which loses nothing, and add one line
 to the main loop: it rewrites a register with its own value, interrupts off. No competing work
-(0 us), on two chips and two host ports; in each column, board, cable and host stay the same and
-only the register differs:
+(0 us), on two chips and two host ports. In each column, board, cable and host stay the same. The
+`UEP1` and `UEP2` rows differ only by the register rewritten (one 16-bit read and store; `RX_CTRL` is
+never written). The last row is a separate control: the same line on `multi-nyet`, which has manual
+toggles but also NYET and EP1 IN armed from the main loop:
 
 | Image | Register rewritten | VCT6, behind the hub | VCT6, root port | WCU6, root port |
 |---|---|---|---|---|
@@ -69,7 +71,7 @@ only the register differs:
 | `multi-nyet-hammer-ep1-txlen` | `UEP1_TX_LEN`, on `multi-nyet` (manual toggles) | 2 × 5000, and 4 × 5000 at 5 us | 2 × 5000 | 2 × 5000 |
 
 A write that changes nothing, on EP1's IN side, is enough to lose EP1 OUT packets with the auto
-toggle. The same write on another number, or with manual toggles, is harmless.
+toggle. The same write on another number is harmless, and so is it in the manual-toggle variant.
 
 ## License
 
