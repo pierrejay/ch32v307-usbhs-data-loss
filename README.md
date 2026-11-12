@@ -73,7 +73,7 @@ Each policy is one patch in `patches/`, applied to a copy of the sources at buil
 | `toggle` | `toggle-rx`, IN armed with one store | 1000/1000, dup | 1000/1000, dup | 5000/5000, dup | 100,000/100,000, dup |
 
 "dup": the duplicate test passed (`runner.py --duplicate`, see [Host runner](#host-runner)). "–": not
-run. Devices: CH32V307VCT6 (macOS host) and CH32V307WCU6 (Linux host). `vanilla` loses from 1 us,
+run. Devices: CH32V307VCT6 and CH32V307WCU6 (macOS host), CH32V307VCT6 (Linux host). `vanilla` loses from 1 us,
 and in almost every 1,000-burst run from 4 us. With the host writing and reading at once,
 `nyet-dataup` also runs 4 × 5000 bursts at 5 and 20 us without loss.
 
