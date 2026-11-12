@@ -23,8 +23,8 @@ The DUT binaries came from repository commit
 | `failure-5us-burst93.pcapng` | Original frames 5358–5438 extracted from the failing capture; frame numbers are renumbered |
 | `failure-5us.json` | Unmodified runner failure report |
 | `failure-5us-received.bin` | The 2,560 bytes returned by the device |
-| `toggle-rx-20us-burst4011.pcapng` | `toggle-rx` (commit `3e15681`) at 20 us on a CH32V307VCT6, Linux host, same sniffer; image linked behind that board's bootloader, sources otherwise as in the repository: 1 ms before and after burst 4011, where P4 goes out twice as DATA0 and P5 never (README, [Transmission at 20 us](../README.md#transmission-at-20-us-usbhs_endp_dataup-stores-twice)) |
-| `nyet-20us-burst3930.pcapng` | `nyet` (commit `6625d98`) at 20 us on a CH32V307VCT6, Linux host, same sniffer; image linked behind that board's bootloader, sources otherwise as in the repository: 1 ms before and after burst 3930, where P2 goes out as DATA1 like P1 and is dropped by the host (README, [Transmission at 20 us](../README.md#transmission-at-20-us-usbhs_endp_dataup-stores-twice)) |
+| `toggle-rx-20us-burst4011.pcapng` | `toggle-rx` (commit `3e15681`) at 20 us on a CH32V307VCT6, Linux host, same sniffer; image linked behind that board's bootloader, sources otherwise as in the repository: 1 ms before and after burst 4011, where P4 goes out twice as DATA0 and P5 never (README, [Transmission at 20 us](https://github.com/pierrejay/ch32v307-usbhs-data-loss#transmission-at-20-us-usbhs_endp_dataup-stores-twice)) |
+| `nyet-20us-burst3930.pcapng` | `nyet` (commit `6625d98`) at 20 us on a CH32V307VCT6, Linux host, same sniffer; image linked behind that board's bootloader, sources otherwise as in the repository: 1 ms before and after burst 3930, where P2 goes out as DATA1 like P1 and is dropped by the host (README, [Transmission at 20 us](https://github.com/pierrejay/ch32v307-usbhs-data-loss#transmission-at-20-us-usbhs_endp_dataup-stores-twice)) |
 
 The captures have complete PCAPNG blocks. Neither the control nor the failure
 contains a sniffer overflow report or a Wireshark CRC5, CRC16, PID or PID
