@@ -39,7 +39,7 @@ sudo python3 runner_duplex.py --duplex --ep3 --count 5000     # add --ep-in 0x82
 
 ## Results
 
-CH32V307WCU6, Linux host, 4 runs of 5000 bursts or the first failure:
+CH32V307VCT6, Linux host, 4 runs of 5000 bursts or the first failure:
 
 | Image | Reception | EP1 IN | 5 us | 20 us |
 |---|---|---|---|---|
