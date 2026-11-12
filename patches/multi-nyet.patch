@@ -1,0 +1,66 @@
+--- a/ch32v30x_usbhs_device.c
++++ b/ch32v30x_usbhs_device.c
+@@ -165,8 +165,8 @@
+     USBHSD->UEP0_TX_CTRL = USBHS_UEP_T_RES_NAK;
+     USBHSD->UEP0_RX_CTRL = USBHS_UEP_R_RES_ACK;
+ 
+-    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_ACK;
+-    USBHSD->UEP3_RX_CTRL = USBHS_UEP_R_RES_ACK;
++    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_NYET;
++    USBHSD->UEP3_RX_CTRL = USBHS_UEP_R_RES_NYET;
+     USBHSD->UEP5_RX_CTRL = USBHS_UEP_R_RES_ACK;
+ 
+     USBHSD->UEP1_TX_LEN  = 0;
+@@ -304,7 +304,9 @@
+                 USBHS_Endp_Busy[ endp ] |= DEF_UEP_BUSY;
+                 /* end-point n response tx ack */
+                 USBHSD_UEP_TLEN( endp ) = len;
+-                USBHSD_UEP_TXCTRL( endp ) = (USBHSD_UEP_TXCTRL( endp ) &= ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_ACK;
++                /* One store: the original stored twice, and a packet sent between the two stores
++                 * had its toggle written back by the second one. */
++                USBHSD_UEP_TXCTRL( endp ) = (USBHSD_UEP_TXCTRL( endp ) & ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_ACK;
+             }
+             else
+             {
+@@ -400,7 +402,7 @@
+                         USBHSD->UEP4_TX_CTRL = (USBHSD->UEP4_TX_CTRL & ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_NAK;
+                         USBHSD->UEP4_TX_CTRL ^= USBHS_UEP_T_TOG_DATA1;
+                         USBHS_Endp_Busy[ DEF_UEP4 ] &= ~DEF_UEP_BUSY;
+-                        USBHSD->UEP3_RX_CTRL = ((USBHSD->UEP3_RX_CTRL) & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
++                        USBHSD->UEP3_RX_CTRL = ((USBHSD->UEP3_RX_CTRL) & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_NYET;
+                         break;
+ 
+                     /* end-point 6 data in interrupt */
+@@ -704,8 +706,8 @@
+                             switch( (uint8_t)(USBHS_SetupReqIndex&0xFF) )
+                             {
+                                 case (DEF_UEP1 | DEF_UEP_OUT):
+-                                    /* Set End-point 1 OUT ACK */
+-                                    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_ACK;
++                                    /* Set End-point 1 OUT NYET */
++                                    USBHSD->UEP1_RX_CTRL = USBHS_UEP_R_RES_NYET;
+                                     break;
+ 
+                                 case (DEF_UEP1 | DEF_UEP_IN):
+@@ -714,8 +716,8 @@
+                                     break;
+ 
+                                 case (DEF_UEP3 | DEF_UEP_OUT):
+-                                    /* Set End-point 3 OUT ACK */
+-                                    USBHSD->UEP3_RX_CTRL = USBHS_UEP_R_RES_ACK;
++                                    /* Set End-point 3 OUT NYET */
++                                    USBHSD->UEP3_RX_CTRL = USBHS_UEP_R_RES_NYET;
+                                     break;
+ 
+                                 case (DEF_UEP4 | DEF_UEP_IN):
+--- a/main.c
++++ b/main.c
+@@ -74,7 +74,7 @@
+                 if(RingBuffer_Comm.StopFlag)
+                 {
+                     RingBuffer_Comm.StopFlag = 0;
+-                    USBHSD->UEP1_RX_CTRL = (USBHSD->UEP1_RX_CTRL & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_ACK;
++                    USBHSD->UEP1_RX_CTRL = (USBHSD->UEP1_RX_CTRL & ~USBHS_UEP_R_RES_MASK) | USBHS_UEP_R_RES_NYET;
+                 }
+             }
+         }

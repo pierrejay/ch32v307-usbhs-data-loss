@@ -1,0 +1,13 @@
+--- a/ch32v30x_usbhs_device.c
++++ b/ch32v30x_usbhs_device.c
+@@ -304,7 +304,9 @@
+                 USBHS_Endp_Busy[ endp ] |= DEF_UEP_BUSY;
+                 /* end-point n response tx ack */
+                 USBHSD_UEP_TLEN( endp ) = len;
+-                USBHSD_UEP_TXCTRL( endp ) = (USBHSD_UEP_TXCTRL( endp ) &= ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_ACK;
++                /* One store: the original stored twice, and a packet sent between the two stores
++                 * had its toggle written back by the second one. */
++                USBHSD_UEP_TXCTRL( endp ) = (USBHSD_UEP_TXCTRL( endp ) & ~USBHS_UEP_T_RES_MASK) | USBHS_UEP_T_RES_ACK;
+             }
+             else
+             {

@@ -14,7 +14,10 @@ SIZE := $(CROSS)size
 # Microseconds spent in the competing TIM2 ISR. This is the experiment's only knob.
 WORK_US ?= 0
 POLICY ?= vanilla
-POLICIES := vanilla no-tog-ok nyet nyet-dataup toggle-rx toggle
+POLICIES := vanilla no-tog-ok nyet nyet-dataup toggle-rx toggle \
+	multi-vanilla multi-nyet multi-toggle multi-toggle-split multi-toggle-in multi-toggle-in-split \
+	multi-toggle-in-isr multi-hammer-ep1-txlen multi-hammer-ep1-txctrl multi-hammer-ep2-txlen \
+	multi-nyet-hammer-ep1-txlen
 
 ifeq ($(filter $(POLICY),$(POLICIES)),)
 $(error POLICY must be one of: $(POLICIES))
@@ -30,11 +33,13 @@ LINKER := $(SDK_SRC)/Ld/Link.ld
 ifeq ($(POLICY),vanilla)
 MAIN_SOURCE := src/main.c
 USB_SOURCE := src/ch32v30x_usbhs_device.c
+DESC_SOURCE := src/usb_desc.c
 else
 POLICY_PATCH := patches/$(POLICY).patch
 PATCHED := $(BUILD)/patched
 MAIN_SOURCE := $(PATCHED)/main.c
 USB_SOURCE := $(PATCHED)/ch32v30x_usbhs_device.c
+DESC_SOURCE := $(PATCHED)/usb_desc.c
 endif
 
 ARCH := -march=rv32imacxw -mabi=ilp32
@@ -48,7 +53,7 @@ LDFLAGS := -T $(LINKER) -Os -g $(ARCH) -ffunction-sections -fdata-sections \
 	-Wl,-gc-sections --specs=nano.specs --specs=nosys.specs -nostartfiles \
 	-Wl,-Map=$(BUILD)/ch372-echo.map
 
-SRC := $(MAIN_SOURCE) $(USB_SOURCE) src/usb_desc.c \
+SRC := $(MAIN_SOURCE) $(USB_SOURCE) $(DESC_SOURCE) \
 	src/ch32v30x_it.c src/competing_irq.c $(VENDOR)/system_ch32v30x.c \
 	$(SDK_SRC)/Core/core_riscv.c $(SDK_SRC)/Debug/debug.c \
 	$(SDK_SRC)/Startup/startup_ch32v30x_D8C.S \
@@ -83,6 +88,7 @@ help:
 		'  POLICY=nyet-dataup            nyet, and arm EP1 IN with one store' \
 		'  POLICY=toggle-rx              Take EP1 OUT on its auto-toggled RX toggle flip' \
 		'  POLICY=toggle                 toggle-rx, and arm EP1 IN with one store' \
+		'  POLICY=multi-...              Both loopbacks busy at once (README, Two loops at once)' \
 		'  WORK_US=N                     Work in the competing TIM2 ISR, in us (default: 0)' \
 		'' \
 		'Output:' \
@@ -164,12 +170,12 @@ $(ELF): $(OBJ) $(LINKER)
 	$(CC) -o $@ $(LDFLAGS) $(OBJ) -lm
 
 ifneq ($(POLICY),vanilla)
-$(MAIN_SOURCE): src/main.c src/ch32v30x_usbhs_device.c $(POLICY_PATCH) | $(BUILD)
+$(MAIN_SOURCE): src/main.c src/ch32v30x_usbhs_device.c src/usb_desc.c $(POLICY_PATCH) | $(BUILD)
 	@mkdir -p $(PATCHED)
-	@cp src/main.c src/ch32v30x_usbhs_device.c $(PATCHED)/
+	@cp src/main.c src/ch32v30x_usbhs_device.c src/usb_desc.c $(PATCHED)/
 	@patch --batch --forward -s -p1 -d $(PATCHED) < $(POLICY_PATCH)
 
-$(USB_SOURCE): $(MAIN_SOURCE)
+$(USB_SOURCE) $(DESC_SOURCE): $(MAIN_SOURCE)
 	@test -f $@
 endif
 
