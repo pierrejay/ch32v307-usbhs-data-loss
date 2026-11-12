@@ -5,14 +5,15 @@ When another interrupt delays the USB interrupt by a few microseconds, the echo 
 packets that the host saw acknowledged never reach the application.
 
 This repository reproduces the loss with WCH's own code, explains it and fixes it. There are two
-causes, each fixed by a small change:
+causes:
 
-| Direction | What goes wrong | Fix |
-|---|---|---|
-| Reception, from 1 us of delay | A late handler reads the `TOG_OK` bit of a later packet and drops a good one; two packets are lost | Arm EP1 OUT with NYET instead of ACK |
-| Transmission, at 20 us | `USBHS_Endp_DataUp` arms IN with two stores; the second can undo a packet sent in between; one packet is lost | Arm IN with one store |
+| Direction | What goes wrong |
+|---|---|
+| Reception, from 1 us of delay | A late handler reads the `TOG_OK` bit of a later packet and drops a good one; two packets are lost |
+| Transmission, at 20 us | `USBHS_Endp_DataUp` arms IN with two stores; the second can undo a packet sent in between; one packet is lost |
 
-With both changes (`nyet-dataup`), 100,000 bursts at 20 us come back exact.
+The [fix](#fix) for this example takes four lines (`nyet-dataup`): 100,000 bursts at 20 us come back
+exact.
 
 ## The test
 
@@ -76,15 +77,25 @@ run. Devices: CH32V307VCT6 (macOS host) and CH32V307WCU6 (Linux host). `vanilla`
 and in almost every 1,000-burst run from 4 us. With the host writing and reading at once,
 `nyet-dataup` also runs 4 × 5000 bursts at 5 and 20 us without loss.
 
-`no-tog-ok` is what WCH's NCM, ECM and RNDIS examples and
-[TinyUSB](https://github.com/hathach/tinyusb/blob/53f8c53c2cbd73a91a172f1ae35e9abc00eb5075/src/portable/wch/dcd_ch32_usbhs.c#L396-L416)
-do, but it passes a retransmitted packet to the application, which then gets the data twice.
-`toggle` keeps duplicate detection too, but relies on the auto toggle, which needs IN and OUT on
-different endpoint numbers (see [below](#the-auto-toggle-and-a-shared-endpoint-number)).
+## Fix
 
-For the minimal fix, which keeps this example's endpoints, we recommend `nyet-dataup`. If IN and OUT
-can also move to different endpoint numbers, `toggle` is the suitable fix: that is how the ch32-hal
-driver avoids the problem.
+**For this example as it is: `nyet-dataup`.** Four lines, one per cause, and the endpoints stay. EP1
+OUT is armed with NYET instead of ACK, which keeps WCH's `TOG_OK` test valid (see
+[Reception](#reception-tog_ok-read-too-late)), and `USBHS_Endp_DataUp` arms IN with one store. The
+cost: the host sends a PING before every OUT packet.
+
+**Preferred if the endpoints can change: the auto toggle, each endpoint on its own number.** The SIE
+flips the OUT toggle itself, and the handler takes a packet when the toggle has flipped (`toggle`,
+which also arms IN with one store). It does not depend on what `INT_ST` shows when the handler runs,
+and needs no PING. But an IN and an OUT must then not share an endpoint number (see
+[below](#the-auto-toggle-and-a-shared-endpoint-number)): EP1's IN moves to 0x82, for instance. The
+[`multi-endpoint`](https://github.com/pierrejay/ch32v307-usbhs-data-loss/tree/multi-endpoint) branch
+tests it with both of the example's loopbacks busy: no loss at 5 and 20 us. The ch32-hal driver works
+the same way.
+
+`no-tog-ok` is not a fix: like WCH's NCM, ECM and RNDIS examples and
+[TinyUSB](https://github.com/hathach/tinyusb/blob/53f8c53c2cbd73a91a172f1ae35e9abc00eb5075/src/portable/wch/dcd_ch32_usbhs.c#L396-L416),
+it passes a retransmitted packet to the application, which then gets the data twice.
 
 ## Why packets are lost
 
