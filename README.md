@@ -79,8 +79,12 @@ and in almost every 1,000-burst run from 4 us. With the host writing and reading
 `no-tog-ok` is what WCH's NCM, ECM and RNDIS examples and
 [TinyUSB](https://github.com/hathach/tinyusb/blob/53f8c53c2cbd73a91a172f1ae35e9abc00eb5075/src/portable/wch/dcd_ch32_usbhs.c#L396-L416)
 do, but it passes a retransmitted packet to the application, which then gets the data twice.
-`toggle` keeps duplicate detection, but relies on the auto toggle, which has a hardware limit (see
-[below](#the-auto-toggle-and-a-shared-endpoint-number)). We recommend `nyet-dataup`.
+`toggle` keeps duplicate detection too, but relies on the auto toggle, which needs IN and OUT on
+different endpoint numbers (see [below](#the-auto-toggle-and-a-shared-endpoint-number)).
+
+For the minimal fix, which keeps this example's endpoints, we recommend `nyet-dataup`. If IN and OUT
+can also move to different endpoint numbers, `toggle` is the suitable fix: that is how the ch32-hal
+driver avoids the problem.
 
 ## Why packets are lost
 
